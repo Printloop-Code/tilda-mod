@@ -41,6 +41,7 @@ class Layout {
         y: 0.5,
     }
     size = 1;
+    id: string; // Уникальный идентификатор
 
     constructor({
         name,
@@ -48,6 +49,36 @@ class Layout {
     }: LayoutProps) {
         this.name = name;
         this.view = view;
+        this.id = Layout.generateId();
+    }
+
+    static generateId(): string {
+        return `layout_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+
+    // Методы для работы с view
+    changeView(newView: View): void {
+        const oldView = this.view;
+        this.view = newView;
+        console.log(`Layout ${this.name} переключен с ${oldView} на ${newView}`);
+    }
+
+    toggleView(): View {
+        this.view = this.view === 'front' ? 'back' : 'front';
+        console.log(`Layout ${this.name} переключен на ${this.view}`);
+        return this.view;
+    }
+
+    isOnFront(): boolean {
+        return this.view === 'front';
+    }
+
+    isOnBack(): boolean {
+        return this.view === 'back';
+    }
+
+    getViewInfo(): string {
+        return `${this.name} (${this.type}) - сторона: ${this.view}`;
     }
 }
 
@@ -170,6 +201,25 @@ class Editor {
     canvasAreaWidth = 600;
     canvasAreaHeight = 600;
 
+    // Система привязки и направляющих
+    snapTolerance = 10; // Расстояние в пикселях для привязки
+    guideShowDistance = 25; // Расстояние показа направляющих (больше зоны привязки)
+    guideLines: fabric.Line[] = []; // Массив направляющих линий
+    isSnapping = false; // Флаг активности привязки
+    snapEnabled = true; // Можно включать/выключать привязку
+
+    // Фильтрация слоев
+    showOnlyCurrentSide = true; // Показывать только слои текущей стороны
+
+    // Связь между объектами canvas и layout'ами
+    objectLayoutMap = new Map<fabric.Object, string>(); // Объект -> Layout ID
+
+    // Система автосохранения
+    autoSaveInterval: NodeJS.Timeout | null = null;
+    lastSaveTime = 0;
+    hasUnsavedChanges = false;
+    saveDebounceTimer: NodeJS.Timeout | null = null;
+
     constructor({
         editorBlockId,
         mockupBlockId,
@@ -209,16 +259,65 @@ class Editor {
         try {
             if (localStorage.getItem('layouts')) {
                 const savedLayouts = JSON.parse(localStorage.getItem('layouts')!);
-                this.layouts = savedLayouts.map((layout: any) => {
-                    const findClass = this.layoutClasses[layout.type];
-                    if (!findClass) return undefined;
-                    return new findClass(layout);
-                }).filter((layout: Layout) => layout !== undefined) as Layout[];
+                console.log('Загружаем layout\'ы из localStorage:', savedLayouts);
 
-                localStorage.setItem('layouts', JSON.stringify(this.layouts));
+                if (Array.isArray(savedLayouts) && savedLayouts.length > 0) {
+                    this.layouts = savedLayouts.map((layoutData: any) => {
+                        const findClass = this.layoutClasses[layoutData.type];
+                        if (!findClass) {
+                            console.warn(`Неизвестный тип layout'а: ${layoutData.type}`);
+                            return undefined;
+                        }
+
+                        // Создаем объект с минимальными параметрами
+                        const layout = Object.create(findClass.prototype);
+
+                        // Копируем все сохраненные свойства
+                        Object.assign(layout, layoutData);
+
+                        // Убеждаемся что у layout'а есть ID (для совместимости со старыми данными)
+                        if (!layout.id) {
+                            layout.id = Layout.generateId();
+                        }
+
+                        // Убеждаемся что у layout'а есть корректная позиция
+                        if (!layout.position || typeof layout.position !== 'object') {
+                            console.warn(`Layout ${layout.name} имеет некорректную позицию, устанавливаем по умолчанию`);
+                            layout.position = { x: 0.5, y: 0.5 };
+                        }
+
+                        // Проверяем корректность позиции
+                        if (isNaN(layout.position.x) || isNaN(layout.position.y)) {
+                            console.warn(`Layout ${layout.name} имеет некорректные координаты, исправляем`);
+                            layout.position = { x: 0.5, y: 0.5 };
+                        }
+
+                        console.log(`Загружен layout ${layout.name}:`, {
+                            id: layout.id,
+                            position: layout.position,
+                            size: layout.size,
+                            type: layout.type
+                        });
+
+                        return layout;
+                    }).filter((layout: Layout) => layout !== undefined) as Layout[];
+
+                    console.log(`Загружено ${this.layouts.length} layout'ов из localStorage`);
+
+                    // Пересохраняем для обеспечения корректности данных
+                    this.saveLayoutsToStorage();
+                } else {
+                    console.log('localStorage содержит пустой массив layout\'ов');
+                    this.layouts = [];
+                }
+            } else {
+                console.log('Нет сохраненных layout\'ов в localStorage, начинаем с пустого массива');
+                this.layouts = [];
             }
         } catch (error) {
+            console.error('Ошибка загрузки из localStorage:', error);
             localStorage.removeItem('layouts');
+            this.layouts = [];
         }
 
 
@@ -229,10 +328,19 @@ class Editor {
 
         this.showMockup();
         this.loadProduct();
+        // Полная загрузка всех слоев при инициализации
         this.printLayouts();
 
         // Инициализация интерфейса
         this.initializeInterface();
+
+        // Автоматическое сохранение при закрытии страницы
+        window.addEventListener('beforeunload', () => {
+            this.saveCurrentObjectPositions();
+        });
+
+        // Запускаем систему автосохранения
+        this.startAutoSave();
     }
 
     updateCanvasSize() {
@@ -520,15 +628,119 @@ class Editor {
             // Автоматическое позиционирование новых объектов
             canvas.on("object:added", (e) => {
                 const obj = e.target;
-                if (obj && obj.name !== "area:clip" && obj.name !== "area:border") {
+                if (obj && obj.name !== "area:clip" && obj.name !== "area:border" && obj.name !== "guideline") {
                     obj.scaleToWidth(clipArea.width! * 0.8); // 80% от области
                     obj.set({
                         left: clipArea.get("left")! + clipArea.width! / 2,
                         top: clipArea.get("top")! + clipArea.height! / 2
-                    }); clipArea
+                    });
                     obj.setCoords();
                     canvas.renderAll();
                 }
+            });
+
+            // Система привязки и направляющих
+            canvas.on("object:moving", (e) => {
+                const obj = e.target;
+                if (obj && obj.name !== "area:clip" && obj.name !== "area:border" && obj.name !== "guideline" && this.snapEnabled) {
+                    // Проверяем, близко ли объект к центру
+                    const { nearX, nearY } = this.isNearCenter(obj, clipArea);
+
+                    if (nearX || nearY) {
+                        this.isSnapping = true;
+
+                        // Показываем только те направляющие, которые нужны
+                        this.showGuidelines(canvas, clipArea, nearX, nearY);
+
+                        // Применяем привязку к центру
+                        this.snapToCenter(obj, clipArea);
+
+                        canvas.renderAll();
+                    } else {
+                        // Если объект далеко от центра, скрываем направляющие
+                        if (this.isSnapping) {
+                            this.clearGuidelines(canvas);
+                            this.isSnapping = false;
+                        }
+                    }
+                }
+            });
+
+            // Улучшенные обработчики событий для сохранения позиций
+            const saveObjectPosition = (obj: fabric.Object, eventName: string) => {
+                if (obj && obj.name !== "area:clip" && obj.name !== "area:border" && obj.name !== "guideline") {
+                    const layoutId = (obj as any).layoutId;
+                    if (layoutId) {
+                        console.log(`Событие ${eventName} для объекта ${layoutId}:`, {
+                            left: obj.left,
+                            top: obj.top,
+                            scaleX: obj.scaleX,
+                            scaleY: obj.scaleY
+                        });
+
+                        // Сохраняем позицию
+                        this.updateLayoutPosition(layoutId, obj.left!, obj.top!);
+
+                        // Сохраняем размер если изменился
+                        const layout = this.findLayoutById(layoutId);
+                        if (layout && obj.scaleX) {
+                            layout.size = obj.scaleX;
+                            this.hasUnsavedChanges = true;
+                        }
+
+                        // Умное сохранение для всех событий
+                        this.smartSave();
+                    }
+                }
+            };
+
+            canvas.on("object:moved", (e) => {
+                const obj = e.target;
+
+                // Немедленно скрываем направляющие после завершения перемещения
+                if (this.snapEnabled && this.isSnapping) {
+                    this.clearGuidelines(canvas);
+                    this.isSnapping = false;
+                }
+
+                // Сохраняем позицию
+                saveObjectPosition(obj!, 'object:moved');
+            });
+
+            canvas.on("object:modified", (e) => {
+                const obj = e.target;
+                saveObjectPosition(obj!, 'object:modified');
+            });
+
+            canvas.on("object:scaling", (e) => {
+                const obj = e.target;
+                saveObjectPosition(obj!, 'object:scaling');
+            });
+
+            canvas.on("object:rotating", (e) => {
+                const obj = e.target;
+                saveObjectPosition(obj!, 'object:rotating');
+            });
+
+            // Дополнительное сохранение при отпускании мыши
+            canvas.on("mouse:up", (e) => {
+                if (canvas.getActiveObject()) {
+                    const obj = canvas.getActiveObject()!;
+                    setTimeout(() => {
+                        saveObjectPosition(obj, 'mouse:up');
+                    }, 100); // Небольшая задержка чтобы позиция успела обновиться
+                }
+            });
+
+            // Скрываем направляющие при снятии выделения с объекта
+            canvas.on("selection:cleared", () => {
+                if (this.isSnapping && this.snapEnabled) {
+                    this.clearGuidelines(canvas);
+                    this.isSnapping = false;
+                }
+
+                // Дополнительное сохранение при снятии выделения
+                this.forceSave();
             });
         }
     }
@@ -572,6 +784,11 @@ class Editor {
 
         this.activeSide = side;
 
+        // Очищаем направляющие с предыдущего активного canvas
+        if (this.activeCanvas) {
+            this.clearGuidelines(this.activeCanvas);
+        }
+
         // Скрываем/показываем canvas в зависимости от выбранной стороны
         this.canvases.forEach(canvas => {
             const canvasElement = canvas.getElement();
@@ -583,6 +800,8 @@ class Editor {
             } else {
                 canvasElement.parentElement!.style.pointerEvents = "none";
                 canvasElement.style.display = "none";
+                // Очищаем направляющие с неактивных canvas
+                this.clearGuidelines(canvas);
             }
         });
 
@@ -597,9 +816,15 @@ class Editor {
             }
         });
 
+        // Сохраняем текущие позиции объектов перед переключением
+        this.saveCurrentObjectPositions();
+
         // Обновляем вид мокапа
         this.selectView = side as View;
         this.showMockup();
+
+        // Обновляем только HTML панель слоев (без перерисовки объектов на canvas)
+        this.updateLayersPanel();
 
         // Принудительно обновляем активный canvas и его области редактирования
         if (this.activeCanvas) {
@@ -650,24 +875,637 @@ class Editor {
         return targetCanvas.getObjects().find(obj => (obj as any).name === name);
     }
 
+    // Методы для работы с направляющими линиями и привязкой
+    createGuideLine(x1: number, y1: number, x2: number, y2: number): fabric.Line {
+        return new fabric.Line([x1, y1, x2, y2], {
+            stroke: '#40a9f3',
+            strokeWidth: 2,
+            strokeDashArray: [8, 4],
+            selectable: false,
+            evented: false,
+            excludeFromExport: true,
+            name: 'guideline',
+            opacity: 0.8,
+            globalCompositeOperation: 'difference' // Инвертирующий эффект для лучшей видимости
+        });
+    }
+
+    showGuidelines(canvas: fabric.Canvas, clipArea: fabric.Object, nearX: boolean = true, nearY: boolean = true) {
+        // Очищаем старые направляющие
+        this.clearGuidelines(canvas);
+
+        if (!clipArea) return;
+
+        const centerX = clipArea.left! + clipArea.width! / 2;
+        const centerY = clipArea.top! + clipArea.height! / 2;
+
+        // Показываем только те направляющие, которые нужны
+        if (nearX) {
+            // Вертикальная направляющая по центру
+            const verticalGuide = this.createGuideLine(
+                centerX, clipArea.top!,
+                centerX, clipArea.top! + clipArea.height!
+            );
+            this.guideLines.push(verticalGuide);
+        }
+
+        if (nearY) {
+            // Горизонтальная направляющая по центру
+            const horizontalGuide = this.createGuideLine(
+                clipArea.left!, centerY,
+                clipArea.left! + clipArea.width!, centerY
+            );
+            this.guideLines.push(horizontalGuide);
+        }
+
+        // Добавляем направляющие на canvas только если есть что добавлять
+        if (this.guideLines.length > 0) {
+            this.guideLines.forEach(line => canvas.add(line));
+            canvas.renderAll();
+        }
+    }
+
+    clearGuidelines(canvas: fabric.Canvas) {
+        this.guideLines.forEach(line => canvas.remove(line));
+        this.guideLines = [];
+        canvas.renderAll();
+    }
+
+    // Проверяем, близко ли объект к центру (в зоне показа направляющих)
+    isNearCenter(obj: fabric.Object, clipArea: fabric.Object): { nearX: boolean, nearY: boolean } {
+        if (!clipArea || !obj) return { nearX: false, nearY: false };
+
+        const centerX = clipArea.left! + clipArea.width! / 2;
+        const centerY = clipArea.top! + clipArea.height! / 2;
+
+        const objBounds = obj.getBoundingRect();
+        const objCenterX = objBounds.left + objBounds.width / 2;
+        const objCenterY = objBounds.top + objBounds.height / 2;
+
+        return {
+            nearX: Math.abs(objCenterX - centerX) <= this.guideShowDistance,
+            nearY: Math.abs(objCenterY - centerY) <= this.guideShowDistance
+        };
+    }
+
+    snapToCenter(obj: fabric.Object, clipArea: fabric.Object): boolean {
+        if (!clipArea || !obj) return false;
+
+        const centerX = clipArea.left! + clipArea.width! / 2;
+        const centerY = clipArea.top! + clipArea.height! / 2;
+
+        // Получаем центр объекта с учетом его размеров и масштаба
+        const objBounds = obj.getBoundingRect();
+        const objCenterX = objBounds.left + objBounds.width / 2;
+        const objCenterY = objBounds.top + objBounds.height / 2;
+
+        let snapped = false;
+
+        // Проверка привязки по горизонтали (к центру по X)
+        if (Math.abs(objCenterX - centerX) <= this.snapTolerance) {
+            const newLeft = centerX - objBounds.width / 2;
+            obj.set({
+                left: newLeft
+            });
+            snapped = true;
+        }
+
+        // Проверка привязки по вертикали (к центру по Y)  
+        if (Math.abs(objCenterY - centerY) <= this.snapTolerance) {
+            const newTop = centerY - objBounds.height / 2;
+            obj.set({
+                top: newTop
+            });
+            snapped = true;
+        }
+
+        if (snapped) {
+            obj.setCoords();
+        }
+
+        return snapped;
+    }
+
+    // Методы управления системой привязки
+    enableSnap() {
+        this.snapEnabled = true;
+        console.log('Привязка включена');
+    }
+
+    disableSnap() {
+        this.snapEnabled = false;
+        // Очищаем все направляющие при отключении
+        this.canvases.forEach(canvas => this.clearGuidelines(canvas));
+        console.log('Привязка выключена');
+    }
+
+    toggleSnap() {
+        if (this.snapEnabled) {
+            this.disableSnap();
+        } else {
+            this.enableSnap();
+        }
+        return this.snapEnabled;
+    }
+
+    // Методы настройки расстояний
+    setSnapTolerance(tolerance: number) {
+        this.snapTolerance = Math.max(1, tolerance);
+        console.log(`Зона привязки установлена: ${this.snapTolerance}px`);
+    }
+
+    setGuideShowDistance(distance: number) {
+        this.guideShowDistance = Math.max(this.snapTolerance, distance);
+        console.log(`Зона показа направляющих установлена: ${this.guideShowDistance}px`);
+    }
+
+    // Метод для очистки пользовательских объектов с canvas
+    clearCanvasUserObjects(canvas: fabric.Canvas) {
+        // Получаем все объекты кроме системных (границ области и направляющих)
+        const objectsToRemove = canvas.getObjects().filter(obj => {
+            const objName = (obj as any).name;
+            return objName !== "area:clip" && objName !== "area:border" && objName !== "guideline";
+        });
+
+        // Удаляем объекты из карты связей
+        objectsToRemove.forEach(obj => {
+            this.objectLayoutMap.delete(obj);
+            canvas.remove(obj);
+        });
+
+        canvas.renderAll();
+    }
+
+    // Методы управления фильтрацией слоев
+    showAllLayers() {
+        this.showOnlyCurrentSide = false;
+        this.updateLayersPanel();
+        console.log('Показываем все слои');
+    }
+
+    showCurrentSideLayers() {
+        this.showOnlyCurrentSide = true;
+        this.updateLayersPanel();
+        console.log('Показываем только слои текущей стороны');
+    }
+
+    toggleLayerFiltering() {
+        if (this.showOnlyCurrentSide) {
+            this.showAllLayers();
+        } else {
+            this.showCurrentSideLayers();
+        }
+        return this.showOnlyCurrentSide;
+    }
+
+    // Методы для работы с layout'ами и объектами
+    findLayoutById(id: string): Layout | undefined {
+        return this.layouts.find(layout => layout.id === id);
+    }
+
+    linkObjectToLayout(obj: fabric.Object, layoutId: string) {
+        this.objectLayoutMap.set(obj, layoutId);
+        (obj as any).layoutId = layoutId; // Также добавляем свойство к объекту для удобства
+    }
+
+    updateLayoutPosition(layoutId: string, x: number, y: number) {
+        const layout = this.findLayoutById(layoutId);
+        if (layout) {
+            // Конвертируем абсолютные координаты в относительные (0-1)
+            const relativeX = Math.max(0, Math.min(1, x / this.canvasAreaWidth));
+            const relativeY = Math.max(0, Math.min(1, y / this.canvasAreaHeight));
+
+            const oldPosition = { ...layout.position };
+
+            layout.position.x = relativeX;
+            layout.position.y = relativeY;
+
+            // Помечаем что есть несохраненные изменения
+            this.hasUnsavedChanges = true;
+
+            // Сохраняем обновленные данные (немедленно для критических изменений)
+            this.saveLayoutsToStorage();
+
+            console.log(`Позиция layout'а ${layout.name} (${layoutId}) обновлена:`, {
+                old: oldPosition,
+                new: { x: relativeX, y: relativeY },
+                absolute: { x, y },
+                canvasSize: { width: this.canvasAreaWidth, height: this.canvasAreaHeight }
+            });
+        } else {
+            console.warn(`Layout с ID ${layoutId} не найден для обновления позиции`);
+        }
+    }
+
+    // Система автосохранения
+    startAutoSave() {
+        // Автосохранение каждые 5 секунд
+        this.autoSaveInterval = setInterval(() => {
+            if (this.hasUnsavedChanges) {
+                console.log('Автосохранение позиций...');
+                this.saveCurrentObjectPositions();
+                this.hasUnsavedChanges = false;
+            }
+        }, 5000);
+
+        console.log('Автосохранение запущено (каждые 5 секунд)');
+    }
+
+    stopAutoSave() {
+        if (this.autoSaveInterval) {
+            clearInterval(this.autoSaveInterval);
+            this.autoSaveInterval = null;
+            console.log('Автосохранение остановлено');
+        }
+    }
+
+    // Принудительное сохранение с отметкой времени
+    forceSave() {
+        // Отменяем предыдущий таймер если есть
+        if (this.saveDebounceTimer) {
+            clearTimeout(this.saveDebounceTimer);
+            this.saveDebounceTimer = null;
+        }
+
+        this.saveCurrentObjectPositions();
+        this.lastSaveTime = Date.now();
+        this.hasUnsavedChanges = false;
+        console.log('Принудительное сохранение выполнено');
+    }
+
+    // Умное сохранение с debouncing - не сохраняет слишком часто
+    smartSave() {
+        // Отменяем предыдущий таймер
+        if (this.saveDebounceTimer) {
+            clearTimeout(this.saveDebounceTimer);
+        }
+
+        // Устанавливаем новый таймер на 1 секунду
+        this.saveDebounceTimer = setTimeout(() => {
+            if (this.hasUnsavedChanges) {
+                this.saveCurrentObjectPositions();
+                this.lastSaveTime = Date.now();
+                this.hasUnsavedChanges = false;
+                console.log('Умное сохранение выполнено');
+            }
+            this.saveDebounceTimer = null;
+        }, 1000);
+
+        console.log('Умное сохранение запланировано через 1 секунду');
+    }
+
+    saveLayoutsToStorage() {
+        const dataToSave = this.layouts.map(layout => ({
+            id: layout.id,
+            name: layout.name,
+            position: layout.position,
+            size: layout.size,
+            view: layout.view
+        }));
+
+        localStorage.setItem('layouts', JSON.stringify(this.layouts));
+        console.log('Сохранено в localStorage:', dataToSave);
+    }
+
+    // Методы для работы с view параметром layout'ов
+    changeLayoutView(layoutId: string, newView: View): boolean {
+        const layout = this.findLayoutById(layoutId);
+        if (layout) {
+            // Сначала сохраняем текущие позиции
+            this.saveCurrentObjectPositions();
+
+            // Меняем view у layout'а
+            layout.changeView(newView);
+
+            // Сохраняем изменения
+            this.saveLayoutsToStorage();
+
+            // Перемещаем объект на соответствующий canvas
+            this.moveLayoutObjectToView(layout);
+
+            // Обновляем панель если нужно
+            if (this.showOnlyCurrentSide) {
+                this.updateLayersPanel();
+            }
+
+            return true;
+        }
+        return false;
+    }
+
+    toggleLayoutView(layoutId: string): View | null {
+        const layout = this.findLayoutById(layoutId);
+        if (layout) {
+            const newView = layout.toggleView();
+
+            // Сохраняем изменения
+            this.saveLayoutsToStorage();
+
+            // Перемещаем объект на соответствующий canvas
+            this.moveLayoutObjectToView(layout);
+
+            // Обновляем панель если нужно
+            if (this.showOnlyCurrentSide) {
+                this.updateLayersPanel();
+            }
+
+            return newView;
+        }
+        return null;
+    }
+
+    // Метод для перемещения объекта layout'а на соответствующий canvas
+    moveLayoutObjectToView(layout: Layout) {
+        // Находим объект на старом canvas
+        let objectToMove: fabric.Object | null = null;
+        let oldCanvas: fabric.Canvas | null = null;
+
+        // Ищем объект во всех canvas'ах
+        for (const canvas of this.canvases) {
+            const objects = canvas.getObjects();
+            objectToMove = objects.find(obj => (obj as any).layoutId === layout.id) || null;
+            if (objectToMove) {
+                oldCanvas = canvas;
+                break;
+            }
+        }
+
+        if (objectToMove && oldCanvas) {
+            // Удаляем объект со старого canvas
+            oldCanvas.remove(objectToMove);
+            oldCanvas.renderAll();
+
+            // Находим новый canvas
+            const newCanvas = this.canvases.find(canvas => (canvas as any).side === layout.view);
+            if (newCanvas) {
+                // Добавляем объект на новый canvas
+                newCanvas.add(objectToMove);
+                newCanvas.renderAll();
+
+                console.log(`Объект ${layout.name} перемещен на canvas стороны ${layout.view}`);
+            }
+        }
+    }
+
+    // Получить все layout'ы определенной стороны
+    getLayoutsByView(view: View): Layout[] {
+        return this.layouts.filter(layout => layout.view === view);
+    }
+
+    // Получить информацию о распределении layout'ов по сторонам
+    getViewStats(): { front: number, back: number, total: number } {
+        const frontLayouts = this.getLayoutsByView('front');
+        const backLayouts = this.getLayoutsByView('back');
+
+        return {
+            front: frontLayouts.length,
+            back: backLayouts.length,
+            total: this.layouts.length
+        };
+    }
+
+    // Метод для копирования layout'а на другую сторону
+    copyLayoutToView(layoutId: string, targetView: View): string | null {
+        const originalLayout = this.findLayoutById(layoutId);
+        if (!originalLayout) return null;
+
+        // Создаем копию layout'а
+        let newLayout: Layout;
+
+        if (originalLayout instanceof ImageLayout) {
+            newLayout = new ImageLayout({
+                name: `${originalLayout.name} (копия)`,
+                view: targetView,
+                preview_url: originalLayout.preview_url
+            });
+        } else if (originalLayout instanceof TextLayout) {
+            newLayout = new TextLayout({
+                name: `${originalLayout.name} (копия)`,
+                view: targetView,
+                font: { ...originalLayout.font }
+            });
+        } else {
+            return null;
+        }
+
+        // Копируем позицию и размер
+        newLayout.position = { ...originalLayout.position };
+        newLayout.size = originalLayout.size;
+
+        // Добавляем новый layout
+        this.addLayoutInternal(newLayout);
+
+        console.log(`Layout ${originalLayout.name} скопирован на сторону ${targetView}`);
+        return newLayout.id;
+    }
+
+    // Метод для сохранения текущих позиций всех объектов в layout'ы
+    saveCurrentObjectPositions() {
+        this.canvases.forEach(canvas => {
+            const objects = canvas.getObjects().filter(obj => {
+                const objName = (obj as any).name;
+                return objName !== "area:clip" && objName !== "area:border" && objName !== "guideline";
+            });
+
+            objects.forEach(obj => {
+                const layoutId = (obj as any).layoutId;
+                if (layoutId) {
+                    this.updateLayoutPosition(layoutId, obj.left!, obj.top!);
+
+                    // Также сохраняем размер если он изменился
+                    const layout = this.findLayoutById(layoutId);
+                    if (layout && obj.scaleX) {
+                        layout.size = obj.scaleX;
+                    }
+                }
+            });
+        });
+
+        this.saveLayoutsToStorage();
+        console.log('Сохранены текущие позиции всех объектов');
+    }
+
+    // Метод для обновления только HTML панели слоев (без перерисовки объектов)
+    updateLayersPanel() {
+        if (!this.layoutsBlock) {
+            this.layoutsBlock = document.querySelector('.editor-layout');
+        }
+
+        if (!this.layoutsBlock) return;
+
+        this.layoutsBlock.innerHTML = '';
+
+        // Фильтруем слои по выбранной стороне (если включена фильтрация)
+        const layersToShow = this.showOnlyCurrentSide
+            ? this.layouts.filter(layout => layout.view === this.selectView)
+            : this.layouts;
+
+        if (this.showOnlyCurrentSide) {
+            console.log(`Обновляем панель слоев для стороны "${this.selectView}":`, layersToShow);
+        } else {
+            console.log('Обновляем панель для всех слоев:', layersToShow);
+        }
+
+        // Создаем HTML элементы для каждого слоя (без создания объектов на canvas)
+        layersToShow.forEach(layout => {
+            this.createLayerPanelItem(layout);
+        });
+    }
+
+    // Создание HTML элемента для панели слоев без создания объектов canvas
+    createLayerPanelItem(layout: Layout) {
+        const layoutItem = document.createElement('div');
+        layoutItem.classList.add('editor-layout-item');
+        this.layoutsBlock!.appendChild(layoutItem);
+
+        const layoutItemPreview = document.createElement('div');
+        layoutItemPreview.classList.add('editor-layout-item-preview');
+
+        if (layout instanceof ImageLayout) {
+            const imageBlock = document.createElement('img');
+            imageBlock.src = layout.preview_url;
+            imageBlock.classList.add('editor-layout-item-preview-image');
+            layoutItemPreview.appendChild(imageBlock);
+        } else if (layout instanceof TextLayout) {
+            const textBlock = document.createElement('div');
+            textBlock.classList.add('editor-layout-item-preview-text');
+            textBlock.innerText = "T";
+            layoutItemPreview.appendChild(textBlock);
+        }
+
+        layoutItem.appendChild(layoutItemPreview);
+
+        const layoutItemContent = document.createElement('div');
+        layoutItemContent.classList.add('editor-layout-item-content');
+        layoutItemContent.innerText = layout.name;
+        layoutItem.appendChild(layoutItemContent);
+
+        const layoutItemControls = document.createElement('div');
+        layoutItemControls.classList.add('editor-layout-item-controls');
+        layoutItem.appendChild(layoutItemControls);
+
+        this.controls.forEach(control => {
+            const layoutItemControlButton = document.createElement('div');
+            layoutItemControlButton.classList.add('editor-layout-item-control-button');
+            layoutItemControlButton.addEventListener('click', control.action.bind(this, this.layouts.indexOf(layout)));
+            layoutItemControls.appendChild(layoutItemControlButton);
+
+            const layoutItemControl = document.createElement('i');
+            layoutItemControl.classList.add('icon');
+            layoutItemControl.title = control.name;
+            layoutItemControl.dataset.lucide = control.icon;
+            layoutItemControlButton.appendChild(layoutItemControl);
+        });
+    }
+
 
     addLayoutInternal(layout: Layout) {
         this.layouts.push(layout);
-        localStorage.setItem('layouts', JSON.stringify(this.layouts));
-        this.printLayout(layout);
+        this.saveLayoutsToStorage();
+
+        // Создаем объект на canvas для нового слоя
+        this.addLayoutToCanvas(layout);
+
+        // Обновляем HTML панель
+        this.updateLayersPanel();
     }
 
+    // Метод для добавления конкретного layout'а на canvas
+    async addLayoutToCanvas(layout: Layout) {
+        const targetCanvas = this.canvases.find(canvas => (canvas as any).side === layout.view);
+        if (!targetCanvas) {
+            console.warn(`Canvas для стороны "${layout.view}" не найден`);
+            return;
+        }
+
+        if (layout instanceof ImageLayout) {
+            await new Promise((res) => {
+                fabric.Image.fromURL(layout.preview_url, (image) => {
+                    image.scale(layout.size);
+
+                    // Конвертируем относительные координаты в абсолютные
+                    const absoluteX = layout.position.x * this.canvasAreaWidth;
+                    const absoluteY = layout.position.y * this.canvasAreaHeight;
+
+                    console.log(`Добавляем новое изображение для ${layout.name}:`, {
+                        relative: layout.position,
+                        absolute: { x: absoluteX, y: absoluteY },
+                        canvasSize: { width: this.canvasAreaWidth, height: this.canvasAreaHeight }
+                    });
+
+                    image.set({
+                        top: absoluteY,
+                        left: absoluteX,
+                    });
+
+                    // Связываем объект с layout'ом
+                    this.linkObjectToLayout(image, layout.id);
+
+                    // Добавляем на canvas
+                    targetCanvas.add(image);
+                    targetCanvas.renderAll();
+                    res(image);
+                });
+            });
+        } else if (layout instanceof TextLayout) {
+            // Конвертируем относительные координаты в абсолютные
+            const absoluteX = layout.position.x * this.canvasAreaWidth;
+            const absoluteY = layout.position.y * this.canvasAreaHeight;
+
+            console.log(`Добавляем новый текст для ${layout.name}:`, {
+                relative: layout.position,
+                absolute: { x: absoluteX, y: absoluteY },
+                canvasSize: { width: this.canvasAreaWidth, height: this.canvasAreaHeight }
+            });
+
+            const text = new fabric.Text(layout.name, {
+                fontFamily: layout.font.family,
+                fontSize: layout.font.size,
+                scaleX: layout.size,
+                scaleY: layout.size,
+                top: absoluteY,
+                left: absoluteX,
+            });
+
+            // Связываем объект с layout'ом
+            this.linkObjectToLayout(text, layout.id);
+
+            // Добавляем на canvas
+            targetCanvas.add(text);
+            targetCanvas.renderAll();
+        }
+    }
+
+    // Метод для полной перерисовки всех слоев (используется только при инициализации)
     async printLayouts() {
         this.layoutsBlock = document.querySelector('.editor-layout');
         this.layoutsBlock!.innerHTML = '';
 
+        // Очищаем ВСЕ canvas'ы от пользовательских объектов
+        this.canvases.forEach(canvas => {
+            this.clearCanvasUserObjects(canvas);
+        });
+
+        console.log('Полная перерисовка всех слоев из сохраненных данных');
+
+        // Отрисовываем все слои на соответствующие canvas'ы
         for (const layout of this.layouts) {
-            console.log(layout);
+            console.log('Перерисовываем:', layout);
             await this.printLayout(layout);
         }
+
+        // Обновляем HTML панель
+        this.updateLayersPanel();
     }
 
     async printLayout(layout: Layout) {
+        // Находим canvas для стороны слоя
+        const targetCanvas = this.canvases.find(canvas => (canvas as any).side === layout.view);
+        if (!targetCanvas) {
+            console.warn(`Canvas для стороны "${layout.view}" не найден`);
+            return;
+        }
+
         const layoutItem = document.createElement('div');
         layoutItem.classList.add('editor-layout-item');
         this.layoutsBlock!.appendChild(layoutItem);
@@ -683,12 +1521,27 @@ class Editor {
             await new Promise((res) => {
                 fabric.Image.fromURL(layout.preview_url, (image) => {
                     image.scale(layout.size);
-                    image.set({
-                        top: layout.position.y,
-                        left: layout.position.x,
+
+                    // Конвертируем относительные координаты в абсолютные
+                    const absoluteX = layout.position.x * this.canvasAreaWidth;
+                    const absoluteY = layout.position.y * this.canvasAreaHeight;
+
+                    console.log(`Создаем изображение для ${layout.name}:`, {
+                        relative: layout.position,
+                        absolute: { x: absoluteX, y: absoluteY },
+                        canvasSize: { width: this.canvasAreaWidth, height: this.canvasAreaHeight }
                     });
 
-                    this.activeCanvas!.add(image);
+                    image.set({
+                        top: absoluteY,
+                        left: absoluteX,
+                    });
+
+                    // Связываем объект с layout'ом
+                    this.linkObjectToLayout(image, layout.id);
+
+                    // Добавляем на правильный canvas для стороны слоя
+                    targetCanvas.add(image);
                     res(image);
                 });
             })
@@ -698,15 +1551,30 @@ class Editor {
             textBlock.innerText = "T";
             layoutItemPreview.appendChild(textBlock);
 
+            // Конвертируем относительные координаты в абсолютные
+            const absoluteX = layout.position.x * this.canvasAreaWidth;
+            const absoluteY = layout.position.y * this.canvasAreaHeight;
+
+            console.log(`Создаем текст для ${layout.name}:`, {
+                relative: layout.position,
+                absolute: { x: absoluteX, y: absoluteY },
+                canvasSize: { width: this.canvasAreaWidth, height: this.canvasAreaHeight }
+            });
+
             const text = new fabric.Text(layout.name, {
                 fontFamily: layout.font.family,
                 fontSize: layout.font.size,
                 scaleX: layout.size,
                 scaleY: layout.size,
-                top: layout.position.y,
-                left: layout.position.x,
+                top: absoluteY,
+                left: absoluteX,
             });
-            this.activeCanvas!.add(text);
+
+            // Связываем объект с layout'ом
+            this.linkObjectToLayout(text, layout.id);
+
+            // Добавляем на правильный canvas для стороны слоя
+            targetCanvas.add(text);
         }
         layoutItem.appendChild(layoutItemPreview);
 
@@ -1001,6 +1869,145 @@ const editor = new Editor({
 })
 
 tempWindow.editor = editor;
+
+// Глобальные функции для управления привязкой
+(window as any).toggleSnap = () => editor.toggleSnap();
+(window as any).enableSnap = () => editor.enableSnap();
+(window as any).disableSnap = () => editor.disableSnap();
+(window as any).setSnapTolerance = (tolerance: number) => editor.setSnapTolerance(tolerance);
+(window as any).setGuideShowDistance = (distance: number) => editor.setGuideShowDistance(distance);
+
+// Глобальные функции для управления отображением слоев
+(window as any).showAllLayers = () => editor.showAllLayers();
+(window as any).showCurrentSideLayers = () => editor.showCurrentSideLayers();
+(window as any).toggleLayerFiltering = () => editor.toggleLayerFiltering();
+
+// Отладочные функции
+(window as any).printLayoutPositions = () => {
+    console.log('Текущие позиции layout\'ов:');
+    editor.layouts.forEach(layout => {
+        console.log(`${layout.name} (${layout.id}):`, layout.position);
+    });
+};
+
+// Функция для ручного сохранения позиций
+(window as any).saveCurrentPositions = () => editor.saveCurrentObjectPositions();
+
+// Отладочные функции для localStorage
+(window as any).showSavedLayouts = () => {
+    const saved = localStorage.getItem('layouts');
+    if (saved) {
+        console.log('Сохраненные layout\'ы в localStorage:', JSON.parse(saved));
+    } else {
+        console.log('Нет сохраненных layout\'ов в localStorage');
+    }
+};
+
+(window as any).clearSavedLayouts = () => {
+    localStorage.removeItem('layouts');
+    console.log('localStorage очищен');
+};
+
+// Функции для работы с view параметром
+(window as any).changeLayoutView = (layoutId: string, newView: 'front' | 'back') => {
+    return editor.changeLayoutView(layoutId, newView);
+};
+
+(window as any).toggleLayoutView = (layoutId: string) => {
+    return editor.toggleLayoutView(layoutId);
+};
+
+(window as any).copyLayoutToView = (layoutId: string, targetView: 'front' | 'back') => {
+    return editor.copyLayoutToView(layoutId, targetView);
+};
+
+(window as any).getViewStats = () => {
+    const stats = editor.getViewStats();
+    console.log('Статистика по сторонам:', stats);
+    return stats;
+};
+
+(window as any).showLayoutsByView = (view: 'front' | 'back') => {
+    const layouts = editor.getLayoutsByView(view);
+    console.log(`Layout'ы на стороне ${view}:`, layouts.map(l => ({
+        id: l.id,
+        name: l.name,
+        type: l.type,
+        position: l.position
+    })));
+    return layouts;
+};
+
+(window as any).listAllLayouts = () => {
+    console.log('Все layout\'ы:');
+    editor.layouts.forEach(layout => {
+        console.log(`- ${layout.getViewInfo()}, позиция: (${layout.position.x.toFixed(2)}, ${layout.position.y.toFixed(2)})`);
+    });
+    return editor.layouts;
+};
+
+// Функции для управления автосохранением
+(window as any).forceSave = () => {
+    editor.forceSave();
+};
+
+(window as any).startAutoSave = () => {
+    editor.startAutoSave();
+};
+
+(window as any).stopAutoSave = () => {
+    editor.stopAutoSave();
+};
+
+// Отладочные функции для тестирования сохранения
+(window as any).testSaveRestore = () => {
+    console.log('=== ТЕСТ СОХРАНЕНИЯ И ВОССТАНОВЛЕНИЯ ===');
+
+    // Сохраняем текущее состояние
+    editor.saveCurrentObjectPositions();
+    console.log('1. Текущие позиции сохранены');
+
+    // Показываем что сохранилось
+    const saved = localStorage.getItem('layouts');
+    if (saved) {
+        const parsedLayouts = JSON.parse(saved);
+        console.log('2. Сохраненные данные:', parsedLayouts.map((l: any) => ({
+            name: l.name,
+            position: l.position,
+            view: l.view
+        })));
+    }
+
+    // Показываем текущие позиции объектов на canvas
+    console.log('3. Текущие позиции объектов на canvas:');
+    editor.canvases.forEach((canvas, index) => {
+        const side = (canvas as any).side || `canvas-${index}`;
+        const objects = canvas.getObjects().filter(obj => {
+            const objName = (obj as any).name;
+            return objName !== "area:clip" && objName !== "area:border" && objName !== "guideline";
+        });
+
+        objects.forEach(obj => {
+            const layoutId = (obj as any).layoutId;
+            if (layoutId) {
+                console.log(`   ${side}: ${layoutId} - позиция: (${obj.left}, ${obj.top})`);
+            }
+        });
+    });
+};
+
+(window as any).checkAutoSave = () => {
+    console.log('Статус автосохранения:', {
+        active: editor.autoSaveInterval !== null,
+        hasUnsavedChanges: editor.hasUnsavedChanges,
+        lastSaveTime: new Date(editor.lastSaveTime).toLocaleTimeString(),
+        debounceTimer: editor.saveDebounceTimer !== null
+    });
+};
+
+(window as any).smartSave = () => {
+    editor.smartSave();
+};
 
 // editor.addLayout(new ImageLayout({
 //     name: 'Изображение',
