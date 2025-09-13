@@ -1,0 +1,32 @@
+{
+    "name": "frontend-project",
+    "version": "1.0.0",
+    "description": "TypeScript проект для фронтенда с компиляцией в JavaScript",
+    "main": "dist/index.js",
+    "scripts": {
+        "build": "tsc",
+        "dev": "webpack serve",
+        "clean": "rimraf dist",
+        "start": "npm run build && node dist/index.js"
+    },
+    "keywords": [
+        "typescript",
+        "frontend",
+        "javascript"
+    ],
+    "author": "",
+    "license": "MIT",
+    "devDependencies": {
+        "@types/fabric": "^5.3.0",
+        "rimraf": "^5.0.5",
+        "typescript": "^5.3.3",
+        "webpack-cli": "^6.0.1",
+        "webpack-dev-server": "^5.2.2"
+    },
+    "dependencies": {
+        "fabric": "^5.3.0",
+        "lucide": "^0.544.0",
+        "ts-loader": "^9.5.4",
+        "webpack": "^5.101.3"
+    }
+}
