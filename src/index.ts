@@ -32,13 +32,18 @@ type LayoutProps = {
     view: View;
 }
 
+type Position = {
+    x: number;
+    y: number;
+}
+
 class Layout {
     type: string = '';
     name: string = '';
     view: View = 'front';
-    position = {
-        x: 0.5,
-        y: 0.5,
+    position: Position = {
+        x: 0,
+        y: 0,
     }
     size = 1;
     id: string; // Уникальный идентификатор
@@ -60,12 +65,12 @@ class Layout {
     changeView(newView: View): void {
         const oldView = this.view;
         this.view = newView;
-        console.log(`Layout ${this.name} переключен с ${oldView} на ${newView}`);
+        console.debug(`Layout ${this.name} переключен с ${oldView} на ${newView}`);
     }
 
     toggleView(): View {
         this.view = this.view === 'front' ? 'back' : 'front';
-        console.log(`Layout ${this.name} переключен на ${this.view}`);
+        console.debug(`Layout ${this.name} переключен на ${this.view}`);
         return this.view;
     }
 
@@ -137,6 +142,7 @@ type EditorProps = {
     editorBlockId: string;
     mockupBlockId: string;
     sidesButtonClass: string;
+    areaBorderColor?: string;
     mockups: Mockup[];
     productConfig: ProductConfig;
     canvasAreaWidth?: number;
@@ -227,6 +233,7 @@ class Editor {
         productConfig,
         canvasAreaWidth = 600,
         canvasAreaHeight = 600,
+        areaBorderColor = "rgb(255, 155, 62)",
     }: EditorProps) {
         if (mockups.length === 0)
             throw new Error('Mockups are not found');
@@ -249,17 +256,19 @@ class Editor {
         this.canvasesContainer.style.left = '0';
         this.canvasesContainer.style.width = '100%';
         this.canvasesContainer.style.height = '100%';
-        this.canvasesContainer.style.pointerEvents = 'auto'; // Разрешаем события мыши
-        this.canvasesContainer.style.zIndex = '1'; // Базовый z-index для контейнера
+        // TODO: Check if it's needed
+        // this.canvasesContainer.style.pointerEvents = 'auto';
+        this.canvasesContainer.style.zIndex = '1';
         this.editorBlock!.appendChild(this.canvasesContainer);
 
+        // TODO: Check if it's needed
         // Обработчик изменения размера
-        this.setupResizeHandler();
+        // this.setupResizeHandler();
 
         try {
             if (localStorage.getItem('layouts')) {
                 const savedLayouts = JSON.parse(localStorage.getItem('layouts')!);
-                console.log('Загружаем layout\'ы из localStorage:', savedLayouts);
+                console.debug('Загружаем layout\'ы из localStorage:', savedLayouts);
 
                 if (Array.isArray(savedLayouts) && savedLayouts.length > 0) {
                     this.layouts = savedLayouts.map((layoutData: any) => {
@@ -283,16 +292,16 @@ class Editor {
                         // Убеждаемся что у layout'а есть корректная позиция
                         if (!layout.position || typeof layout.position !== 'object') {
                             console.warn(`Layout ${layout.name} имеет некорректную позицию, устанавливаем по умолчанию`);
-                            layout.position = { x: 0.5, y: 0.5 };
+                            layout.position = { x: 0, y: 0 };
                         }
 
                         // Проверяем корректность позиции
                         if (isNaN(layout.position.x) || isNaN(layout.position.y)) {
                             console.warn(`Layout ${layout.name} имеет некорректные координаты, исправляем`);
-                            layout.position = { x: 0.5, y: 0.5 };
+                            layout.position = { x: 0, y: 0 };
                         }
 
-                        console.log(`Загружен layout ${layout.name}:`, {
+                        console.debug(`Загружен layout ${layout.id}:`, {
                             id: layout.id,
                             position: layout.position,
                             size: layout.size,
@@ -302,16 +311,16 @@ class Editor {
                         return layout;
                     }).filter((layout: Layout) => layout !== undefined) as Layout[];
 
-                    console.log(`Загружено ${this.layouts.length} layout'ов из localStorage`);
+                    console.debug(`Загружено ${this.layouts.length} layout'ов из localStorage`);
 
                     // Пересохраняем для обеспечения корректности данных
                     this.saveLayoutsToStorage();
                 } else {
-                    console.log('localStorage содержит пустой массив layout\'ов');
+                    console.debug('localStorage содержит пустой массив layout\'ов');
                     this.layouts = [];
                 }
             } else {
-                console.log('Нет сохраненных layout\'ов в localStorage, начинаем с пустого массива');
+                console.debug('Нет сохраненных layout\'ов в localStorage, начинаем с пустого массива');
                 this.layouts = [];
             }
         } catch (error) {
@@ -326,21 +335,21 @@ class Editor {
 
         this.mockups = mockups;
 
-        this.showMockup();
+        // this.showMockup();
         this.loadProduct();
         // Полная загрузка всех слоев при инициализации
-        this.printLayouts();
+        // this.printLayouts();
 
         // Инициализация интерфейса
-        this.initializeInterface();
+        // this.initializeInterface();
 
         // Автоматическое сохранение при закрытии страницы
-        window.addEventListener('beforeunload', () => {
-            this.saveCurrentObjectPositions();
-        });
+        // window.addEventListener('beforeunload', () => {
+        //     this.saveCurrentObjectPositions();
+        // });
 
         // Запускаем систему автосохранения
-        this.startAutoSave();
+        // this.startAutoSave();
     }
 
     updateCanvasSize() {
@@ -514,9 +523,9 @@ class Editor {
                     (canvas as any).side = side;
 
                     // Принудительно исправляем позиционирование контейнера fabric.js
-                    setTimeout(() => {
-                        this.fixCanvasContainerPositioning(canvas);
-                    }, 10);
+                    // setTimeout(() => {
+                    //     this.fixCanvasContainerPositioning(canvas);
+                    // }, 10);
 
                     // Добавляем в массивы
                     this.layersCanvases.push(layersCanvas);
@@ -542,7 +551,7 @@ class Editor {
                             const layerUrl = sideConfig.layers[layerName];
                             // Пропускаем загрузку базового мокапа - он отображается через HTML img
                             if (layerUrl && layerName !== 'base') {
-                                console.log('Loading layer:', layerName, layerUrl);
+                                console.debug('Loading layer:', layerName, layerUrl);
                                 await this.loadLayer(side, layerUrl);
                             }
                         }
@@ -595,7 +604,7 @@ class Editor {
                 top: top,
                 fill: "rgba(0,0,0,0)",
                 strokeWidth: 3,
-                stroke: "rgba(0, 0, 0, 0.46)",
+                stroke: "rgb(255, 155, 62)",
                 name: "area:border",
                 opacity: 0.3,
                 evented: false,
@@ -671,7 +680,7 @@ class Editor {
                 if (obj && obj.name !== "area:clip" && obj.name !== "area:border" && obj.name !== "guideline") {
                     const layoutId = (obj as any).layoutId;
                     if (layoutId) {
-                        console.log(`Событие ${eventName} для объекта ${layoutId}:`, {
+                        console.debug(`Событие ${eventName} для объекта ${layoutId}:`, {
                             left: obj.left,
                             top: obj.top,
                             scaleX: obj.scaleX,
@@ -683,6 +692,9 @@ class Editor {
 
                         // Сохраняем размер если изменился
                         const layout = this.findLayoutById(layoutId);
+                        layout!.position.x = obj.left!;
+                        layout!.position.y = obj.top!;
+
                         if (layout && obj.scaleX) {
                             layout.size = obj.scaleX;
                             this.hasUnsavedChanges = true;
@@ -764,7 +776,7 @@ class Editor {
             layersCanvas.add(imgObj);
             layersCanvas.renderAll();
 
-            console.log('Layer loaded for side:', side);
+            console.debug('Layer loaded for side:', side);
         } catch (error) {
             console.error('Error loading layer:', error);
         }
@@ -780,7 +792,7 @@ class Editor {
     }
 
     selectSide(side: string) {
-        console.log("Selected side: ", side);
+        console.debug("Selected side: ", side);
 
         this.activeSide = side;
 
@@ -838,32 +850,18 @@ class Editor {
     showEditableArea() {
         if (!this.activeCanvas) return;
 
-        // Получаем области редактирования
-        // const clipArea = this.getObject("area:clip", this.activeCanvas);
         const borderArea = this.getObject("area:border", this.activeCanvas);
-
-        if (borderArea) {
-            borderArea.visible = true;
-            // Делаем границу клипинга слегка видимой
-            borderArea.set({
-                stroke: "rgba(0, 0, 0, 0.3)",
-                strokeDashArray: [5, 5],
-                opacity: 0.8,
-                fill: "transparent"
-            });
-        }
 
         if (borderArea) {
             borderArea.visible = true;
             // Показываем синюю границу по умолчанию с низкой прозрачностью
             borderArea.set({
                 opacity: 0.3,
-                stroke: "rgb(64, 169, 243)",
+                strokeDashArray: [5, 5],
                 strokeWidth: 3
             });
         }
 
-        // Принудительная перерисовка
         this.activeCanvas.renderAll();
     }
 
@@ -989,14 +987,14 @@ class Editor {
     // Методы управления системой привязки
     enableSnap() {
         this.snapEnabled = true;
-        console.log('Привязка включена');
+        console.debug('Привязка включена');
     }
 
     disableSnap() {
         this.snapEnabled = false;
         // Очищаем все направляющие при отключении
         this.canvases.forEach(canvas => this.clearGuidelines(canvas));
-        console.log('Привязка выключена');
+        console.debug('Привязка выключена');
     }
 
     toggleSnap() {
@@ -1011,12 +1009,12 @@ class Editor {
     // Методы настройки расстояний
     setSnapTolerance(tolerance: number) {
         this.snapTolerance = Math.max(1, tolerance);
-        console.log(`Зона привязки установлена: ${this.snapTolerance}px`);
+        console.debug(`Зона привязки установлена: ${this.snapTolerance}px`);
     }
 
     setGuideShowDistance(distance: number) {
         this.guideShowDistance = Math.max(this.snapTolerance, distance);
-        console.log(`Зона показа направляющих установлена: ${this.guideShowDistance}px`);
+        console.debug(`Зона показа направляющих установлена: ${this.guideShowDistance}px`);
     }
 
     // Метод для очистки пользовательских объектов с canvas
@@ -1040,13 +1038,13 @@ class Editor {
     showAllLayers() {
         this.showOnlyCurrentSide = false;
         this.updateLayersPanel();
-        console.log('Показываем все слои');
+        console.debug('Показываем все слои');
     }
 
     showCurrentSideLayers() {
         this.showOnlyCurrentSide = true;
         this.updateLayersPanel();
-        console.log('Показываем только слои текущей стороны');
+        console.debug('Показываем только слои текущей стороны');
     }
 
     toggleLayerFiltering() {
@@ -1086,7 +1084,7 @@ class Editor {
             // Сохраняем обновленные данные (немедленно для критических изменений)
             this.saveLayoutsToStorage();
 
-            console.log(`Позиция layout'а ${layout.name} (${layoutId}) обновлена:`, {
+            console.debug(`Позиция layout'а ${layout.name} (${layoutId}) обновлена:`, {
                 old: oldPosition,
                 new: { x: relativeX, y: relativeY },
                 absolute: { x, y },
@@ -1102,20 +1100,20 @@ class Editor {
         // Автосохранение каждые 5 секунд
         this.autoSaveInterval = setInterval(() => {
             if (this.hasUnsavedChanges) {
-                console.log('Автосохранение позиций...');
+                console.debug('Автосохранение позиций...');
                 this.saveCurrentObjectPositions();
                 this.hasUnsavedChanges = false;
             }
         }, 5000);
 
-        console.log('Автосохранение запущено (каждые 5 секунд)');
+        console.debug('Автосохранение запущено (каждые 5 секунд)');
     }
 
     stopAutoSave() {
         if (this.autoSaveInterval) {
             clearInterval(this.autoSaveInterval);
             this.autoSaveInterval = null;
-            console.log('Автосохранение остановлено');
+            console.debug('Автосохранение остановлено');
         }
     }
 
@@ -1130,7 +1128,7 @@ class Editor {
         this.saveCurrentObjectPositions();
         this.lastSaveTime = Date.now();
         this.hasUnsavedChanges = false;
-        console.log('Принудительное сохранение выполнено');
+        console.debug('Принудительное сохранение выполнено');
     }
 
     // Умное сохранение с debouncing - не сохраняет слишком часто
@@ -1146,12 +1144,12 @@ class Editor {
                 this.saveCurrentObjectPositions();
                 this.lastSaveTime = Date.now();
                 this.hasUnsavedChanges = false;
-                console.log('Умное сохранение выполнено');
+                console.debug('Умное сохранение выполнено');
             }
             this.saveDebounceTimer = null;
         }, 1000);
 
-        console.log('Умное сохранение запланировано через 1 секунду');
+        console.debug('Умное сохранение запланировано через 1 секунду');
     }
 
     saveLayoutsToStorage() {
@@ -1164,7 +1162,7 @@ class Editor {
         }));
 
         localStorage.setItem('layouts', JSON.stringify(this.layouts));
-        console.log('Сохранено в localStorage:', dataToSave);
+        console.debug('Сохранено в localStorage:', dataToSave);
     }
 
     // Методы для работы с view параметром layout'ов
@@ -1242,7 +1240,7 @@ class Editor {
                 newCanvas.add(objectToMove);
                 newCanvas.renderAll();
 
-                console.log(`Объект ${layout.name} перемещен на canvas стороны ${layout.view}`);
+                console.debug(`Объект ${layout.name} перемещен на canvas стороны ${layout.view}`);
             }
         }
     }
@@ -1295,7 +1293,7 @@ class Editor {
         // Добавляем новый layout
         this.addLayoutInternal(newLayout);
 
-        console.log(`Layout ${originalLayout.name} скопирован на сторону ${targetView}`);
+        console.debug(`Layout ${originalLayout.name} скопирован на сторону ${targetView}`);
         return newLayout.id;
     }
 
@@ -1322,7 +1320,7 @@ class Editor {
         });
 
         this.saveLayoutsToStorage();
-        console.log('Сохранены текущие позиции всех объектов');
+        console.debug('Сохранены текущие позиции всех объектов');
     }
 
     // Метод для обновления только HTML панели слоев (без перерисовки объектов)
@@ -1341,9 +1339,9 @@ class Editor {
             : this.layouts;
 
         if (this.showOnlyCurrentSide) {
-            console.log(`Обновляем панель слоев для стороны "${this.selectView}":`, layersToShow);
+            console.debug(`Обновляем панель слоев для стороны "${this.selectView}":`, layersToShow);
         } else {
-            console.log('Обновляем панель для всех слоев:', layersToShow);
+            console.debug('Обновляем панель для всех слоев:', layersToShow);
         }
 
         // Создаем HTML элементы для каждого слоя (без создания объектов на canvas)
@@ -1427,7 +1425,7 @@ class Editor {
                     const absoluteX = layout.position.x * this.canvasAreaWidth;
                     const absoluteY = layout.position.y * this.canvasAreaHeight;
 
-                    console.log(`Добавляем новое изображение для ${layout.name}:`, {
+                    console.debug(`Добавляем новое изображение для ${layout.name}:`, {
                         relative: layout.position,
                         absolute: { x: absoluteX, y: absoluteY },
                         canvasSize: { width: this.canvasAreaWidth, height: this.canvasAreaHeight }
@@ -1452,7 +1450,7 @@ class Editor {
             const absoluteX = layout.position.x * this.canvasAreaWidth;
             const absoluteY = layout.position.y * this.canvasAreaHeight;
 
-            console.log(`Добавляем новый текст для ${layout.name}:`, {
+            console.debug(`Добавляем новый текст для ${layout.name}:`, {
                 relative: layout.position,
                 absolute: { x: absoluteX, y: absoluteY },
                 canvasSize: { width: this.canvasAreaWidth, height: this.canvasAreaHeight }
@@ -1486,11 +1484,11 @@ class Editor {
             this.clearCanvasUserObjects(canvas);
         });
 
-        console.log('Полная перерисовка всех слоев из сохраненных данных');
+        console.debug('Полная перерисовка всех слоев из сохраненных данных');
 
         // Отрисовываем все слои на соответствующие canvas'ы
         for (const layout of this.layouts) {
-            console.log('Перерисовываем:', layout);
+            console.debug('Перерисовываем:', layout);
             await this.printLayout(layout);
         }
 
@@ -1526,7 +1524,7 @@ class Editor {
                     const absoluteX = layout.position.x * this.canvasAreaWidth;
                     const absoluteY = layout.position.y * this.canvasAreaHeight;
 
-                    console.log(`Создаем изображение для ${layout.name}:`, {
+                    console.debug(`Создаем изображение для ${layout.name}:`, {
                         relative: layout.position,
                         absolute: { x: absoluteX, y: absoluteY },
                         canvasSize: { width: this.canvasAreaWidth, height: this.canvasAreaHeight }
@@ -1555,7 +1553,7 @@ class Editor {
             const absoluteX = layout.position.x * this.canvasAreaWidth;
             const absoluteY = layout.position.y * this.canvasAreaHeight;
 
-            console.log(`Создаем текст для ${layout.name}:`, {
+            console.debug(`Создаем текст для ${layout.name}:`, {
                 relative: layout.position,
                 absolute: { x: absoluteX, y: absoluteY },
                 canvasSize: { width: this.canvasAreaWidth, height: this.canvasAreaHeight }
@@ -1605,7 +1603,7 @@ class Editor {
 
     // Методы для интеграции с HTML интерфейсом
     addLayout(type: string, options: any) {
-        console.log('Adding layout:', type, options);
+        console.debug('Adding layout:', type, options);
 
         if (type === 'image' && this.layoutClasses.image) {
             const layout = new ImageLayout({
@@ -1625,7 +1623,7 @@ class Editor {
     }
 
     changeColor(colorName: string) {
-        console.log('Changing color to:', colorName);
+        console.debug('Changing color to:', colorName);
         this.selectColor = colorName;
         this.showMockup();
 
@@ -1651,7 +1649,7 @@ class Editor {
     }
 
     changeView() {
-        console.log('Changing view from:', this.selectView);
+        console.debug('Changing view from:', this.selectView);
         // Переключение между front и back
         if (this.selectView === 'front') {
             this.selectSide('back');
@@ -1694,7 +1692,7 @@ class Editor {
 
         const multiplier = printW / clipArea.width!;
 
-        console.log('Export settings:', { clipArea, printSize, multiplier });
+        console.debug('Export settings:', { clipArea, printSize, multiplier });
 
         const dataUrl = this.activeCanvas.toDataURL({
             format: "png",
@@ -1775,8 +1773,6 @@ class Editor {
     }
 }
 
-const tempWindow = window as unknown as (typeof window) & { editor: Editor };
-
 const editor = new Editor({
     editorBlockId: 'editor-block',
     mockupBlockId: 'mockup',
@@ -1784,7 +1780,7 @@ const editor = new Editor({
     productConfig: {
         printSize: {
             width: 10, // дюймы
-            height: 12,
+            height: 20,
             resolution: 300 // DPI
         },
         sides: {
@@ -1866,9 +1862,9 @@ const editor = new Editor({
             ],
         }
     ]
-})
+});
 
-tempWindow.editor = editor;
+(window as any).editor = editor;
 
 // Глобальные функции для управления привязкой
 (window as any).toggleSnap = () => editor.toggleSnap();
@@ -1884,9 +1880,9 @@ tempWindow.editor = editor;
 
 // Отладочные функции
 (window as any).printLayoutPositions = () => {
-    console.log('Текущие позиции layout\'ов:');
+    console.debug('Текущие позиции layout\'ов:');
     editor.layouts.forEach(layout => {
-        console.log(`${layout.name} (${layout.id}):`, layout.position);
+        console.debug(`${layout.name} (${layout.id}):`, layout.position);
     });
 };
 
@@ -1897,15 +1893,15 @@ tempWindow.editor = editor;
 (window as any).showSavedLayouts = () => {
     const saved = localStorage.getItem('layouts');
     if (saved) {
-        console.log('Сохраненные layout\'ы в localStorage:', JSON.parse(saved));
+        console.debug('Сохраненные layout\'ы в localStorage:', JSON.parse(saved));
     } else {
-        console.log('Нет сохраненных layout\'ов в localStorage');
+        console.debug('Нет сохраненных layout\'ов в localStorage');
     }
 };
 
 (window as any).clearSavedLayouts = () => {
     localStorage.removeItem('layouts');
-    console.log('localStorage очищен');
+    console.debug('localStorage очищен');
 };
 
 // Функции для работы с view параметром
@@ -1923,13 +1919,13 @@ tempWindow.editor = editor;
 
 (window as any).getViewStats = () => {
     const stats = editor.getViewStats();
-    console.log('Статистика по сторонам:', stats);
+    console.debug('Статистика по сторонам:', stats);
     return stats;
 };
 
 (window as any).showLayoutsByView = (view: 'front' | 'back') => {
     const layouts = editor.getLayoutsByView(view);
-    console.log(`Layout'ы на стороне ${view}:`, layouts.map(l => ({
+    console.debug(`Layout'ы на стороне ${view}:`, layouts.map(l => ({
         id: l.id,
         name: l.name,
         type: l.type,
@@ -1939,9 +1935,9 @@ tempWindow.editor = editor;
 };
 
 (window as any).listAllLayouts = () => {
-    console.log('Все layout\'ы:');
+    console.debug('Все layout\'ы:');
     editor.layouts.forEach(layout => {
-        console.log(`- ${layout.getViewInfo()}, позиция: (${layout.position.x.toFixed(2)}, ${layout.position.y.toFixed(2)})`);
+        console.debug(`- ${layout.getViewInfo()}, позиция: (${layout.position.x.toFixed(2)}, ${layout.position.y.toFixed(2)})`);
     });
     return editor.layouts;
 };
@@ -1961,17 +1957,17 @@ tempWindow.editor = editor;
 
 // Отладочные функции для тестирования сохранения
 (window as any).testSaveRestore = () => {
-    console.log('=== ТЕСТ СОХРАНЕНИЯ И ВОССТАНОВЛЕНИЯ ===');
+    console.debug('=== ТЕСТ СОХРАНЕНИЯ И ВОССТАНОВЛЕНИЯ ===');
 
     // Сохраняем текущее состояние
     editor.saveCurrentObjectPositions();
-    console.log('1. Текущие позиции сохранены');
+    console.debug('1. Текущие позиции сохранены');
 
     // Показываем что сохранилось
     const saved = localStorage.getItem('layouts');
     if (saved) {
         const parsedLayouts = JSON.parse(saved);
-        console.log('2. Сохраненные данные:', parsedLayouts.map((l: any) => ({
+        console.debug('2. Сохраненные данные:', parsedLayouts.map((l: any) => ({
             name: l.name,
             position: l.position,
             view: l.view
@@ -1979,7 +1975,7 @@ tempWindow.editor = editor;
     }
 
     // Показываем текущие позиции объектов на canvas
-    console.log('3. Текущие позиции объектов на canvas:');
+    console.debug('3. Текущие позиции объектов на canvas:');
     editor.canvases.forEach((canvas, index) => {
         const side = (canvas as any).side || `canvas-${index}`;
         const objects = canvas.getObjects().filter(obj => {
@@ -1990,14 +1986,14 @@ tempWindow.editor = editor;
         objects.forEach(obj => {
             const layoutId = (obj as any).layoutId;
             if (layoutId) {
-                console.log(`   ${side}: ${layoutId} - позиция: (${obj.left}, ${obj.top})`);
+                console.debug(`   ${side}: ${layoutId} - позиция: (${obj.left}, ${obj.top})`);
             }
         });
     });
 };
 
 (window as any).checkAutoSave = () => {
-    console.log('Статус автосохранения:', {
+    console.debug('Статус автосохранения:', {
         active: editor.autoSaveInterval !== null,
         hasUnsavedChanges: editor.hasUnsavedChanges,
         lastSaveTime: new Date(editor.lastSaveTime).toLocaleTimeString(),
