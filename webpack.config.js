@@ -6,7 +6,8 @@ module.exports = {
             directory: path.resolve(__dirname, 'public')
         },
         compress: true,
-        port: 3000
+        port: 3000,
+        allowedHosts: 'all',
     },
     context: path.resolve(__dirname),
     devtool: 'inline-source-map',
