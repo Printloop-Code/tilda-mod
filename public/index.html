@@ -4,6 +4,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100..900;1,100..900&display=swap"
     rel="stylesheet">
+<script async src="https://ndd-widget.landpro.site/widget.js"></script>
 
 <style>
     * {
@@ -90,6 +91,25 @@
         pointer-events: none;
 
         transition: background-color 0.3s ease;
+    }
+
+    #spinner {
+        border: 16px solid #f3f3f3;
+        border-top: 16px solid #fe5e3a;
+        border-radius: 50%;
+        width: 120px;
+        height: 120px;
+        animation: spin 2s linear infinite;
+    }
+
+    @keyframes spin {
+        0% {
+            transform: rotate(0deg);
+        }
+
+        100% {
+            transform: rotate(360deg);
+        }
     }
 </style>
 

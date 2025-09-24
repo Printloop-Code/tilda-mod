@@ -1,0 +1,342 @@
+<script src="https://unpkg.com/lucide@latest"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100..900;1,100..900&display=swap"
+    rel="stylesheet">
+
+<style>
+    * {
+        padding: 0;
+        margin: 0;
+
+        box-sizing: border-box;
+    }
+
+    body {
+        font-family: "Roboto", sans-serif;
+
+        background: #e7e7e7;
+    }
+
+    main {
+        padding: 18px;
+    }
+
+    .editor-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    .editor-content {
+        position: relative;
+
+        aspect-ratio: 1 / 1;
+        width: 100%;
+        max-width: 600px;
+        max-height: 600px;
+
+        background: #F9F9F9;
+
+        border-radius: 24px;
+    }
+
+    .editor-content-actions {
+        position: absolute;
+        display: flex;
+        gap: 10px;
+        top: 10px;
+        right: 10px;
+
+        z-index: 15;
+    }
+
+    .editor-content-action {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        width: 36px;
+        height: 36px;
+
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .editor-content-action:hover {
+        background: #f5f5f5;
+        transform: translateY(-1px);
+    }
+
+    .editor-content-bg {
+        position: absolute;
+        top: 0;
+        left: 0;
+
+        width: 100%;
+        height: 100%;
+
+        border-radius: 12px;
+        border: 1px solid #F9F9F9;
+        background-color: #ffffff;
+        background-image: radial-gradient(rgba(0, 0, 0, 0.05) 1px, transparent 0);
+        background-size: 20px 20px;
+        box-sizing: border-box;
+
+        z-index: 1;
+    }
+
+    .editor-content-mockup {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+
+        z-index: 5;
+    }
+
+    .editor-content-mockup img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .editor-content-canvas {
+        left: 0;
+        top: 0;
+
+        position: absolute;
+        width: 100%;
+        height: 100%;
+
+        z-index: 10;
+    }
+
+    #canvases {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: auto;
+    }
+
+    #canvases canvas {
+        position: absolute !important;
+        top: 0 !important;
+        left: 0 !important;
+    }
+
+    /* Исправляем позиционирование контейнеров fabric.js */
+    #canvases .canvas-container {
+        position: absolute !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100% !important;
+        height: 100% !important;
+    }
+
+    .editor-layout-container {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+
+        width: 250px;
+    }
+
+    .editor-layout {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+
+        max-height: 100%;
+        overflow-y: auto;
+
+        /* background: green; */
+    }
+
+    .editor-layout-actions {
+        display: flex;
+        gap: 6px;
+    }
+
+    .editor-layout-action {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        justify-content: center;
+
+        cursor: pointer;
+
+        flex: 1;
+
+        padding: 6px;
+    }
+
+    .editor-layout-item {
+        display: flex;
+        gap: 8px;
+
+        width: 100%;
+        padding: 6px;
+
+        align-items: center;
+    }
+
+    .editor-layout-item-preview {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        background: #F9F9F9;
+
+        height: 36px;
+        aspect-ratio: 1 / 1;
+
+        border-radius: 6px;
+        overflow: hidden;
+    }
+
+    .editor-layout-item-preview img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .editor-layout-item-controls {
+        display: flex;
+        gap: 6px;
+
+        margin-left: auto;
+    }
+
+    .editor-layout-item-control-button {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        justify-content: center;
+
+        cursor: pointer;
+    }
+
+    .editor-layout-item-control-button:hover {
+        background: #F9F9F9;
+    }
+
+    .editor-layout-item-control-button>.icon {
+        width: 1.2em;
+    }
+
+    .editor-settings-container {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        width: 200px;
+    }
+
+    .editor-settings-group {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .editor-settings-group-options {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+    }
+
+    .editor-settings-group-option {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        padding: 8px 12px;
+        background: white;
+        border: 2px solid #e7e7e7;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.2s;
+
+        font-size: 14px;
+    }
+
+    .editor-settings-group-option:hover {
+        border-color: #007acc;
+        background: #f0f8ff;
+    }
+
+    .editor-settings-group-option.active {
+        border-color: #007acc;
+        background: #007acc;
+        color: white;
+    }
+</style>
+
+<main>
+    <div class="editor-container">
+        <div class="editor-content">
+            <div class="editor-content-actions">
+                <div class="editor-content-action" onclick="window.editor.changeView()">
+                    <i data-lucide="redo"></i>
+                </div>
+            </div>
+            <div class="editor-content-bg"></div>
+            <div class="editor-content-mockup">
+                <img id="mockup" />
+            </div>
+            <div class="editor-content-canvas" id="editor-block">
+
+            </div>
+        </div>
+        <div class="editor-layout-container">
+            <h3>Слои</h3>
+            <div class="editor-layout-actions">
+                <div class="editor-layout-action" onclick="window.editor.addLayout('image', {
+                    name: 'Изображение',
+                    type: 'image',
+                    preview_url: 'https://opis-cdn.tinkoffjournal.ru/mercury/5ac0f29c.6fd381b3_psx_2024071.jpg',
+                })">
+                    <i data-lucide="plus"></i>
+                    <span>Изображение</span>
+                </div>
+                <div class="editor-layout-action" onclick="window.editor.addLayout('text', {
+                    name: 'PrintLoop',
+                    type: 'text',
+                })">
+                    <i data-lucide="plus"></i>
+                    <span>Текст</span>
+                </div>
+            </div>
+            <div class="editor-layout"></div>
+        </div>
+        <div class="editor-settings-container">
+            <h3>Настройки</h3>
+            <div class="editor-settings-group">
+                <h4>Цвет</h4>
+                <div class="editor-settings-group-options">
+                    <div class="editor-settings-group-option" onclick="editor.changeColor('white')">
+                        <span>Белый</span>
+                    </div>
+                    <div class="editor-settings-group-option" onclick="editor.changeColor('black')">
+                        <span>Черный</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</main>
+
+<script>
+    setInterval(() => {
+        lucide.createIcons();
+    }, 1000);
+</script>
+
+<script src="./bundle.js"></script>

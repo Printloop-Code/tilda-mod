@@ -8,6 +8,15 @@ module.exports = {
         compress: true,
         port: 3000,
         allowedHosts: 'all',
+        client: {
+            webSocketURL: 'wss://1804633.fl.gridesk.ru/ws',
+            overlay: false,
+        },
+        headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        }
     },
     context: path.resolve(__dirname),
     devtool: 'inline-source-map',
