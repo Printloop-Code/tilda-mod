@@ -41,6 +41,303 @@ type Font = {
     size: number;
 }
 
+type EditorState = {
+    date: string;
+    color: string;
+    side: string;
+    type: string;
+    layouts: Layout[];
+    size: string;
+}
+
+type UserData = {
+    userId: string;
+}
+
+type HistoryItem = {
+    id: string;
+    timestamp: number;
+    side: SideEnum;
+    type: Product['type'];
+    color: string;
+    size: string;
+    layouts: Layout[];
+    description?: string;
+}
+
+type HistoryFilter = {
+    side: SideEnum;
+    type: Product['type'];
+}
+
+class EditorStorageManager {
+    private database: IDBDatabase | null = null;
+    private isReady: boolean = false;
+    private readyPromise: Promise<void>;
+
+    constructor() {
+        this.readyPromise = this.init();
+    }
+
+    private async init(): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const openRequest = indexedDB.open("editor", 2);
+
+            openRequest.onupgradeneeded = (event) => {
+                const database = (event.target as IDBOpenDBRequest).result;
+
+                // Создаем ObjectStore для истории
+                if (!database.objectStoreNames.contains('history')) {
+                    database.createObjectStore('history', { keyPath: 'id' });
+                }
+
+                // Создаем ObjectStore для состояния редактора
+                if (!database.objectStoreNames.contains('editor_state')) {
+                    database.createObjectStore('editor_state', { keyPath: 'key' });
+                }
+
+                // Создаем ObjectStore для пользовательских данных
+                if (!database.objectStoreNames.contains('user_data')) {
+                    database.createObjectStore('user_data', { keyPath: 'key' });
+                }
+            };
+
+            openRequest.onerror = () => {
+                console.error("Ошибка открытия IndexedDB", openRequest.error);
+                reject(openRequest.error);
+            };
+
+            openRequest.onsuccess = () => {
+                this.database = openRequest.result;
+                this.isReady = true;
+                resolve();
+            };
+        });
+    }
+
+    async waitForReady(): Promise<void> {
+        await this.readyPromise;
+    }
+
+    async saveEditorState(state: EditorState): Promise<void> {
+        await this.waitForReady();
+        if (!this.database) throw new Error('Database не инициализирована');
+
+        const transaction = this.database.transaction(['editor_state'], 'readwrite');
+        const objectStore = transaction.objectStore('editor_state');
+
+        await Promise.all([
+            this.putData(objectStore, 'date', state.date),
+            this.putData(objectStore, 'color', state.color),
+            this.putData(objectStore, 'side', state.side),
+            this.putData(objectStore, 'type', state.type),
+            this.putData(objectStore, 'layouts', JSON.stringify(state.layouts)),
+            this.putData(objectStore, 'size', state.size)
+        ]);
+    }
+
+    async loadEditorState(): Promise<EditorState | null> {
+        await this.waitForReady();
+        if (!this.database) throw new Error('Database не инициализирована');
+
+        const transaction = this.database.transaction(['editor_state'], 'readonly');
+        const objectStore = transaction.objectStore('editor_state');
+
+        try {
+            const [date, color, side, type, layouts, size] = await Promise.all([
+                this.getData(objectStore, 'date'),
+                this.getData(objectStore, 'color'),
+                this.getData(objectStore, 'side'),
+                this.getData(objectStore, 'type'),
+                this.getData(objectStore, 'layouts'),
+                this.getData(objectStore, 'size')
+            ]);
+
+            if (!date || !color || !side || !type || !size) {
+                return null;
+            }
+
+            return {
+                date,
+                color,
+                side,
+                type,
+                layouts: layouts ? JSON.parse(layouts) : [],
+                size
+            };
+        } catch (error) {
+            console.error('Ошибка загрузки состояния редактора:', error);
+            return null;
+        }
+    }
+
+    async clearEditorState(): Promise<void> {
+        await this.waitForReady();
+        if (!this.database) throw new Error('Database не инициализирована');
+
+        const transaction = this.database.transaction(['editor_state'], 'readwrite');
+        const objectStore = transaction.objectStore('editor_state');
+
+        await Promise.all([
+            this.deleteData(objectStore, 'date'),
+            this.deleteData(objectStore, 'color'),
+            this.deleteData(objectStore, 'side'),
+            this.deleteData(objectStore, 'type'),
+            this.deleteData(objectStore, 'layouts'),
+            this.deleteData(objectStore, 'size')
+        ]);
+    }
+
+    async getUserId(): Promise<string> {
+        await this.waitForReady();
+        if (!this.database) throw new Error('Database не инициализирована');
+
+        const transaction = this.database.transaction(['user_data'], 'readwrite');
+        const objectStore = transaction.objectStore('user_data');
+
+        let userId = await this.getData(objectStore, 'userId');
+
+        if (!userId) {
+            userId = crypto.randomUUID();
+            await this.putData(objectStore, 'userId', userId);
+        }
+
+        return userId;
+    }
+
+    async getHistoryStore(): Promise<IDBObjectStore> {
+        await this.waitForReady();
+        if (!this.database) throw new Error('Database не инициализирована');
+
+        const transaction = this.database.transaction(['history'], 'readwrite');
+        return transaction.objectStore('history');
+    }
+
+    // Сохранить состояние в историю
+    async saveToHistory(item: Omit<HistoryItem, 'id' | 'timestamp'>, description?: string): Promise<string> {
+        await this.waitForReady();
+        if (!this.database) throw new Error('Database не инициализирована');
+
+        const historyItem: HistoryItem = {
+            ...item,
+            id: crypto.randomUUID(),
+            timestamp: Date.now(),
+            description: description || `Изменения от ${new Date().toLocaleString()}`
+        };
+
+        const transaction = this.database.transaction(['history'], 'readwrite');
+        const objectStore = transaction.objectStore('history');
+
+        await new Promise<void>((resolve, reject) => {
+            const request = objectStore.add(historyItem);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve();
+        });
+
+        return historyItem.id;
+    }
+
+    // Получить историю для определенной стороны и типа товара
+    async getHistory(filter: HistoryFilter, limit: number = 50): Promise<HistoryItem[]> {
+        await this.waitForReady();
+        if (!this.database) throw new Error('Database не инициализирована');
+
+        const transaction = this.database.transaction(['history'], 'readonly');
+        const objectStore = transaction.objectStore('history');
+
+        return new Promise((resolve, reject) => {
+            const request = objectStore.getAll();
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                const allItems = request.result as HistoryItem[];
+                const filteredItems = allItems
+                    .filter(item => item.side === filter.side && item.type === filter.type)
+                    .sort((a, b) => b.timestamp - a.timestamp) // Сортировка по времени (новые первые)
+                    .slice(0, limit);
+                resolve(filteredItems);
+            };
+        });
+    }
+
+    // Получить конкретный элемент истории по ID
+    async getHistoryItem(id: string): Promise<HistoryItem | null> {
+        await this.waitForReady();
+        if (!this.database) throw new Error('Database не инициализирована');
+
+        const transaction = this.database.transaction(['history'], 'readonly');
+        const objectStore = transaction.objectStore('history');
+
+        return new Promise((resolve, reject) => {
+            const request = objectStore.get(id);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve(request.result || null);
+        });
+    }
+
+    // Удалить элемент истории по ID
+    async deleteHistoryItem(id: string): Promise<void> {
+        await this.waitForReady();
+        if (!this.database) throw new Error('Database не инициализирована');
+
+        const transaction = this.database.transaction(['history'], 'readwrite');
+        const objectStore = transaction.objectStore('history');
+
+        await new Promise<void>((resolve, reject) => {
+            const request = objectStore.delete(id);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve();
+        });
+    }
+
+    // Очистить историю для определенной стороны и типа
+    async clearHistory(filter?: HistoryFilter): Promise<void> {
+        await this.waitForReady();
+        if (!this.database) throw new Error('Database не инициализирована');
+
+        const transaction = this.database.transaction(['history'], 'readwrite');
+        const objectStore = transaction.objectStore('history');
+
+        if (!filter) {
+            // Очистить всю историю
+            await new Promise<void>((resolve, reject) => {
+                const request = objectStore.clear();
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => resolve();
+            });
+        } else {
+            // Очистить историю для конкретной стороны и типа
+            const allItems = await this.getHistory(filter, 1000); // Получаем все элементы
+            for (const item of allItems) {
+                await this.deleteHistoryItem(item.id);
+            }
+        }
+    }
+
+    private putData(objectStore: IDBObjectStore, key: string, value: any): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const request = objectStore.put({ key, value });
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve();
+        });
+    }
+
+    private getData(objectStore: IDBObjectStore, key: string): Promise<any> {
+        return new Promise((resolve, reject) => {
+            const request = objectStore.get(key);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve(request.result?.value || null);
+        });
+    }
+
+    private deleteData(objectStore: IDBObjectStore, key: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const request = objectStore.delete(key);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve();
+        });
+    }
+}
+
 class TextLayout extends Layout {
     text: string;
     font: Font;
@@ -109,6 +406,12 @@ type EditorProps = {
         editorLayoutItemBlockViewClass: string;
         editorLayoutItemBlockNameClass: string;
         editorLayoutItemBlockRemoveClass: string;
+        editorUploadImageButtonClass: string;
+        editorUploadViewBlockClass: string;
+        editorUploadCanselButtonClass: string;
+        editorLayoutItemBlockEditClass: string;
+        editorQuantityFormBlockClass: string;
+        editorHistoryBlockClass: string;
     }
     formConfig?: {
         formBlockClass: string;
@@ -142,6 +445,9 @@ class Editor {
     editorLayoutItemBlockViewClass: string;
     editorLayoutItemBlockNameClass: string;
     editorLayoutItemBlockRemoveClass: string;
+    editorLayoutItemBlockEditClass: string;
+    quantityFormBlock: HTMLElement | null = null;
+    editorHistoryBlock: HTMLElement;
 
     formBlock: HTMLElement | null;
     formInputVariableName: string | null;
@@ -153,6 +459,7 @@ class Editor {
     selectColor: Color;
     selectSide: SideEnum;
     selectSize: Size;
+    selectLayout: Layout['id'] | null = null;
     productConfigs: Product[];
 
     isLoading: boolean;
@@ -166,10 +473,30 @@ class Editor {
 
     colorBocks: HTMLElement[] = [];
     sizeBocks: HTMLElement[] = [];
+    productBlocks: HTMLElement[] = [];
+
+    loadedUserImage: string | null = null;
+    editorUploadImageButton: HTMLElement;
+    editorUploadViewBlock: HTMLElement;
+    editorUploadCanselButton: HTMLElement;
+    editorLoadWithAi: boolean = false;
+    editorLoadWithAiButton: HTMLElement;
+    editorLoadWithoutAiButton: HTMLElement;
+
+    history: IDBObjectStore | null = null;
+    dataBase: IDBDatabase | null = null;
+    storageManager: EditorStorageManager;
 
     canvasAreaHeight = 600;
 
     constructor({ blocks, productConfigs, formConfig }: EditorProps) {
+        // Инициализируем новый EditorStorageManager
+        this.storageManager = new EditorStorageManager();
+
+        // Мигрируем данные из localStorage (если они есть)
+        this.migrateFromLocalStorage();
+
+
         this.editorBlock = document.querySelector(blocks.editorBlockClass)!;
         this.changeSideButton = document.querySelector(blocks.changeSideButtonClass)!;
         this.productListBlock = document.querySelector(blocks.productListBlockClass)!;
@@ -187,11 +514,17 @@ class Editor {
         this.editorSizeItemBlock = document.querySelector(blocks.editorSizeItemBlockClass)!;
         this.editorLayoutsListBlock = document.querySelector(blocks.editorLayoutsListBlockClass)!;
         this.editorLayoutItemBlock = document.querySelector(blocks.editorLayoutItemBlockClass)!;
+        this.editorUploadImageButton = document.querySelector(blocks.editorUploadImageButtonClass)!;
+        this.editorUploadViewBlock = document.querySelector(blocks.editorUploadViewBlockClass)!;
+        this.editorUploadCanselButton = document.querySelector(blocks.editorUploadCanselButtonClass)!;
+        this.editorHistoryBlock = document.querySelector(blocks.editorHistoryBlockClass)!;
+
+        this.quantityFormBlock = document.querySelector(blocks.editorQuantityFormBlockClass)!;
 
         this.editorLayoutItemBlockViewClass = blocks.editorLayoutItemBlockViewClass;
         this.editorLayoutItemBlockNameClass = blocks.editorLayoutItemBlockNameClass;
         this.editorLayoutItemBlockRemoveClass = blocks.editorLayoutItemBlockRemoveClass;
-
+        this.editorLayoutItemBlockEditClass = blocks.editorLayoutItemBlockEditClass;
         this.formBlock = formConfig?.formBlockClass ? document.querySelector(formConfig?.formBlockClass) : null;
         this.formInputVariableName = formConfig?.formInputVariableName ? formConfig?.formInputVariableName : null;
         this.formButton = formConfig?.formButtonClass ? document.querySelector(formConfig?.formButtonClass) : null;
@@ -206,19 +539,21 @@ class Editor {
         this.selectType = productConfigs[0]!.type;
         this.selectSize = productConfigs[0]!.sizes![0]!;
         this.changeProductName(this.selectType);
-        this.loadState();
+
+        // Инициализируем редактор асинхронно
+        this.initializeEditor();
 
 
         // TODO: Remove DEBUG
-        if (this.layouts.length === 0) {
-            this.addLayout(new ImageLayout({
-                view: 'front',
-                url: 'https://upload.wikimedia.org/wikipedia/commons/0/0e/Felis_silvestris_silvestris.jpg',
-            }));
-            // this.addLayout(new TextLayout({
-            //     view: 'front',
-            // }));
-        }
+        // if (this.layouts.length === 0) {
+        //     this.addLayout(new ImageLayout({
+        //         view: 'front',
+        //         url: 'https://upload.wikimedia.org/wikipedia/commons/0/0e/Felis_silvestris_silvestris.jpg',
+        //     }));
+        //     // this.addLayout(new TextLayout({
+        //     //     view: 'front',
+        //     // }));
+        // }
 
         if (!this.editorLayoutsListBlock) {
             console.warn('Editor layouts list block not found');
@@ -238,15 +573,13 @@ class Editor {
 
         if (!this.editorColorsListBlock) {
             console.warn('Editor colors list block not found');
-        } else {
-            this.initColorsList();
         }
 
         if (!this.editorSizesListBlock) {
             console.warn('Editor sizes list block not found');
-        } else {
-            this.initSizesList();
         }
+
+        // Цвета и размеры будут инициализированы в initializeEditor() после загрузки состояния
 
         if (!this.formBlock) {
             console.warn('Form block not found');
@@ -266,6 +599,18 @@ class Editor {
             this.initClipImageBlock();
         }
 
+        if (!this.editorUploadImageButton) {
+            console.warn('Editor upload image button not found');
+        } else {
+            this.initUploadImageButton();
+        }
+
+        if (!this.editorHistoryBlock) {
+            console.warn('Editor history block not found');
+        } else {
+            this.initHistoryBlock();
+        }
+
         // if (!this.editorSettingsBlock) {
         //     console.warn('Editor settings block not found');
         // } else {
@@ -278,6 +623,10 @@ class Editor {
             this.initProductList();
         }
 
+        if (!this.quantityFormBlock) {
+            console.warn('Quantity form block not found');
+        }
+
         this.editorBlock.style.position = 'relative';
 
         this.createBackgroundBlock();
@@ -288,6 +637,7 @@ class Editor {
         this.loadProduct();
         this.updateMockup();
         this.updateLayouts();
+        this.updateSum();
 
         this.events.addEventListener('mockup-updated', (event) => {
             this.mockupBlock.src = (event as CustomEvent).detail;
@@ -333,8 +683,142 @@ class Editor {
         })
     }
 
+    initHistoryBlock() {
+        console.debug('[history block] init');
+
+        if (!this.editorHistoryBlock) {
+            console.warn('Editor history block not found');
+            return;
+        }
+
+        this.editorHistoryBlock.style.cursor = 'pointer';
+
+        this.editorHistoryBlock.addEventListener('click', () => {
+            console.debug('[history block] clicked');
+
+        });
+    }
+
+    getQuantity() {
+        if (!this.quantityFormBlock) {
+            return 1;
+        }
+
+        const form = this.quantityFormBlock.querySelector("form")! as HTMLFormElement;
+        const input = form.querySelector("input[name='quantity']")! as HTMLInputElement;
+
+        if (!input) {
+            return 1;
+        }
+
+        return parseInt(input.value);
+    }
+
+    resetUserUploadImage() {
+        const editorUploadViewBlock = this.editorUploadViewBlock;
+        if (!editorUploadViewBlock) {
+            console.warn('Editor upload view block not found');
+        } else {
+            editorUploadViewBlock.style.display = 'none';
+        }
+
+        const editorUploadCanselButton = this.editorUploadCanselButton;
+        if (!editorUploadCanselButton) {
+            console.warn('Editor upload cansel button not found');
+        } else {
+            editorUploadCanselButton.style.cursor = 'pointer';
+        }
+
+        editorUploadCanselButton.addEventListener('click', () => {
+            console.debug('[upload image button] cansel button clicked');
+            this.resetUserUploadImage();
+            this.loadedUserImage = null;
+        });
+    }
+
+    initUploadImageButton() {
+        this.resetUserUploadImage();
+
+        console.debug('[upload image button] init');
+        this.editorUploadImageButton.style.cursor = 'pointer';
+        this.editorUploadImageButton.addEventListener('click', () => {
+            console.debug('[upload image button] clicked');
+            this.uploadUserImage();
+        });
+    }
+
+    uploadUserImage() {
+        console.debug('[upload user image] starting user image upload');
+
+        // Создаем input элемент для выбора файла
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = 'image/*';
+        fileInput.style.display = 'none';
+
+        // Обработчик выбора файла
+        fileInput.onchange = (event: Event) => {
+            const target = event.target as HTMLInputElement;
+            const file = target.files?.[0];
+
+            if (file) {
+                console.debug('[upload user image] file selected:', file.name);
+
+                // Проверяем, что это изображение
+                if (!file.type.startsWith('image/')) {
+                    console.warn('[upload user image] selected file is not an image');
+                    alert('Пожалуйста, выберите файл изображения');
+                    return;
+                }
+
+                // Создаем FileReader для чтения файла
+                const reader = new FileReader();
+
+                reader.onload = async (e) => {
+                    const imageUrl = e.target?.result as string;
+                    console.debug('[upload user image] file loaded as data URL');
+
+                    const imageData = await this.getImageData(imageUrl);
+
+                    // Сохраняем загруженное изображение
+                    this.setUserUploadImage(imageData);
+
+                    console.debug('[upload user image] image layout added successfully');
+                };
+
+                reader.onerror = () => {
+                    console.error('[upload user image] error reading file');
+                    alert('Ошибка при загрузке файла');
+                };
+
+                // Читаем файл как data URL
+                reader.readAsDataURL(file);
+            }
+        };
+
+        // Программно кликаем по input для открытия диалога выбора файла
+        document.body.appendChild(fileInput);
+        fileInput.click();
+        document.body.removeChild(fileInput);
+    }
+
+    setUserUploadImage(image: string) {
+        this.loadedUserImage = image;
+
+        this.editorUploadViewBlock.style.display = 'block';
+        // this.editorUploadCanselButton.style.display = 'block';
+        const imageBlock = this.getLastChild(this.editorUploadViewBlock);
+        if (imageBlock) {
+            imageBlock.style.backgroundImage = `url(${image})`;
+            imageBlock.style.backgroundSize = 'contain';
+            imageBlock.style.backgroundPosition = 'center';
+            imageBlock.style.backgroundRepeat = 'no-repeat';
+        }
+    }
+
     initClipImageBlock() {
         this.editorClipImageBlock.style.cursor = 'pointer';
+
         this.editorClipImageBlock.addEventListener('click', () => {
             console.debug('[clip image] clicked');
         });
@@ -344,9 +828,16 @@ class Editor {
         this.editorAddOrderButton.style.cursor = 'pointer';
 
         this.editorAddOrderButton.onclick = async () => {
+            if (this.getSum() === 0) {
+                alert('Для добавления заказа продукт не может быть пустым');
+                return;
+            }
+
             const exportedArt = await this.exportArt();
 
             createProduct({
+                quantity: this.getQuantity(),
+                name: `${this.capitalizeFirstLetter(this.getProductName())} с вашим ${Object.keys(exportedArt).length == 1 ? 'односторонним' : 'двухсторонним'} принтом`,
                 size: this.selectSize,
                 color: this.selectColor,
                 sides: Object.keys(exportedArt).map(side => ({
@@ -354,6 +845,14 @@ class Editor {
                 })),
             });
         }
+    }
+
+    getProductName() {
+        return this.productConfigs.find(product => product.type === this.selectType)?.productName || '';
+    }
+
+    capitalizeFirstLetter(string: string) {
+        return string.charAt(0).toUpperCase() + string.slice(1);
     }
 
     async exportArt(): Promise<{ [side: string]: string }> {
@@ -434,13 +933,22 @@ class Editor {
                     }
                 }
 
-                // Добавляем редактируемые объекты БЕЗ границ, clip'ов и направляющих
+                // Добавляем редактируемые объекты БЕЗ границ, но С учётом clipPath
                 try {
                     const tempEditableCanvas = new fabric.StaticCanvas(null, {
                         width: editableCanvas.getWidth(),
                         height: editableCanvas.getHeight(),
                         backgroundColor: 'transparent'
                     });
+
+                    // Применяем clipPath с основного canvas если он существует
+                    if (editableCanvas.clipPath) {
+                        const clonedClip = await new Promise<fabric.Object>((resolve) => {
+                            editableCanvas.clipPath!.clone((cloned: fabric.Object) => resolve(cloned));
+                        });
+                        tempEditableCanvas.clipPath = clonedClip;
+                        console.debug(`[exportArt] Применён clipPath для экспорта стороны ${side}`);
+                    }
 
                     // Копируем все объекты кроме служебных
                     const allObjects = editableCanvas.getObjects();
@@ -670,6 +1178,13 @@ class Editor {
         // hide color item block
         this.editorColorItemBlock.style.display = 'none';
 
+        // Очищаем контейнер от предыдущих элементов
+        const colorsContainer = this.editorColorsListBlock.firstElementChild!;
+        colorsContainer.innerHTML = '';
+
+        // Очищаем массив ссылок на цветные блоки
+        this.colorBocks = [];
+
         // init colors block
         console.debug(`[settings] [colors] init colors block`)
         const colors = product.mockups.filter(mockup => mockup.side === this.selectSide).map(mockup => mockup.color);
@@ -694,10 +1209,27 @@ class Editor {
     }
 
     initSizesList() {
-        console.debug(`[settings] init for ${this.selectType}`);
+        console.debug(`[settings] [sizes] init for ${this.selectType}`);
         const product = this.productConfigs.find(product => product.type === this.selectType)!;
 
+        // if (!this.editorSizeItemBlock) {
+        //     console.error("[settings] [sizes] editorSizeItemBlock is not initialized");
+        //     return;
+        // }
+
+        if (!this.editorSizesListBlock) {
+            console.error("[settings] [sizes] editorSizesListBlock is not initialized");
+            return;
+        }
+
         this.editorSizeItemBlock.style.display = 'none';
+
+        // Очищаем контейнер от предыдущих элементов
+        const sizesContainer = this.editorSizesListBlock.firstElementChild!;
+        sizesContainer.innerHTML = '';
+
+        // Очищаем массив ссылок на размерные блоки
+        this.sizeBocks = [];
 
         product.sizes!.forEach(size => {
             console.debug(`[settings] [sizes] init size item ${size}`);
@@ -726,6 +1258,16 @@ class Editor {
     showLayoutList() {
         console.debug(`[settings] [layouts] show layouts list`);
 
+        if (!this.editorLayoutItemBlock) {
+            console.error("[settings] [layouts] editorLayoutItemBlock is not initialized");
+            return;
+        }
+
+        if (!this.editorLayoutsListBlock) {
+            console.error("[settings] [layouts] editorLayoutsListBlock is not initialized");
+            return;
+        }
+
         this.editorLayoutItemBlock.style.display = 'none';
         this.editorLayoutsListBlock.firstElementChild!.innerHTML = "";
 
@@ -741,6 +1283,7 @@ class Editor {
             const previewBlock = layoutItem.querySelector(this.editorLayoutItemBlockViewClass)! as HTMLElement;
             const nameBlock = layoutItem.querySelector(this.editorLayoutItemBlockNameClass)! as HTMLElement;
             const removeBlock = layoutItem.querySelector(this.editorLayoutItemBlockRemoveClass)! as HTMLElement;
+            const editBlock = layoutItem.querySelector(this.editorLayoutItemBlockEditClass)! as HTMLElement;
 
             if (previewBlock) {
                 if (layout.type === 'image') {
@@ -752,7 +1295,7 @@ class Editor {
 
             if (nameBlock) {
                 if (layout.type === 'image') {
-                    (nameBlock.firstElementChild! as HTMLElement).innerText = layout.name || "Изображение";
+                    (nameBlock.firstElementChild! as HTMLElement).innerText = !layout.name ? "Изображение" : layout.name.includes("\n") ? layout.name.split("\n")[0] + "..." : layout.name.length > 40 ? layout.name.slice(0, 40) + "..." : layout.name;
                 } else if (layout.type === 'text') {
                     (nameBlock.firstElementChild! as HTMLElement).innerText = layout.name || "Текст";
                 }
@@ -766,10 +1309,30 @@ class Editor {
                 fixIconBlock.style.backgroundImage = `url("${fixIconBlock.attributes.getNamedItem("data-original")?.value}")`;
             }
 
+            if (editBlock) {
+                editBlock.style.cursor = "pointer";
+                editBlock.onclick = () => this.editLayout(layout);
+
+                const fixIconBlock = this.getLastChild(editBlock)! as HTMLElement;
+                fixIconBlock.style.backgroundImage = `url("${fixIconBlock.attributes.getNamedItem("data-original")?.value}")`;
+            }
+
             this.editorLayoutsListBlock.firstElementChild!.appendChild(layoutItem);
         })
 
         console.debug(`[settings] [layouts] layouts shown: ${this.editorLayoutsListBlock.firstElementChild!.children.length}`);
+    }
+
+    editLayout(layout: Layout | ImageLayout | TextLayout) {
+        console.debug(`[settings] [layouts] edit layout ${layout.id}`);
+
+        this.selectLayout = layout.id;
+
+        const formInput = this.formBlock!.querySelector(`[name="${this.formInputVariableName}"]`) as HTMLInputElement;
+        formInput.value = layout.name || "";
+
+        this.loadedUserImage = layout.type === 'image' ? (layout as ImageLayout).url : null;
+        this.setUserUploadImage(this.loadedUserImage!);
     }
 
     async initForm() {
@@ -792,17 +1355,52 @@ class Editor {
             console.debug(`[form] [input] prompt: ${prompt}`);
 
             this.events.dispatchEvent(new CustomEvent('mockup-loading', { detail: true }));
-            const url = await generateImage(prompt);
-            this.events.dispatchEvent(new CustomEvent('mockup-loading', { detail: false }));
+            try {
 
+                const url = await generateImage(prompt, this.selectColor.name, this.loadedUserImage!, this.selectLayout!);
+                this.events.dispatchEvent(new CustomEvent('mockup-loading', { detail: false }));
 
-            this.addLayout(new ImageLayout({
-                view: this.selectSide,
-                url: url,
-                name: "(AI) " + prompt
-            }))
+                const imageData = await this.getImageData(url);
+                console.debug(`[form] [input] image data: ${imageData}`);
 
-            formInput.value = "";
+                if (this.selectLayout) {
+                    const layout = this.layouts.find(layout => layout.id === this.selectLayout)! as ImageLayout;
+
+                    console.debug(`[form] [input] select layout: ${layout}`);
+
+                    layout.name = prompt;
+                    layout.url = imageData;
+
+                    console.debug(`[form] [input] layout updated: ${layout}`);
+
+                    this.showLayoutList();
+                    this.updateLayouts();
+                } else {
+                    this.addLayout(new ImageLayout({
+                        view: this.selectSide,
+                        url: imageData,
+                        name: prompt
+                    }))
+                }
+
+                formInput.value = "";
+
+                if (this.loadedUserImage)
+                    this.resetUserUploadImage();
+            } catch (error) {
+                this.events.dispatchEvent(new CustomEvent('mockup-loading', { detail: false }));
+                console.error('[form] [input] error', error);
+                alert("Ошибка при генерации изображения");
+                return;
+            } finally {
+                if (this.loadedUserImage)
+                    this.resetUserUploadImage();
+
+                if (this.selectLayout) {
+                    this.selectLayout = null;
+                }
+            }
+
         }
 
         const form = await new Promise<HTMLFormElement | null>((resolve) => {
@@ -833,10 +1431,24 @@ class Editor {
             handleClick();
         }
 
-        const fixInputBlock = form.querySelector(`input[name='${formInputVariableName}']`)! as HTMLElement;
+        const fixInputBlock = form.querySelector(`textarea[name='${formInputVariableName}']`)! as HTMLElement;
         fixInputBlock.style.padding = "8px";
         formButton.onclick = handleClick;
         formButton.style.cursor = "pointer";
+    }
+
+    async getImageData(imageUrl: string) {
+        const image = await this.loadImage(imageUrl);
+        const tempCanvas = document.createElement('canvas');
+        const ctx = tempCanvas.getContext('2d')!;
+
+        tempCanvas.width = image.width;
+        tempCanvas.height = image.height;
+
+        // Рисуем мокап как фон
+        ctx.drawImage(image, 0, 0);
+
+        return tempCanvas.toDataURL("image/png");
     }
 
 
@@ -860,6 +1472,15 @@ class Editor {
     }
 
     getLastChild(element: HTMLElement): HTMLElement | null {
+
+        if (!element) {
+            return null;
+        }
+
+        if (!element.firstElementChild) {
+            return element;
+        }
+
         const children = element.firstElementChild!;
 
         if (!children.lastElementChild) {
@@ -940,21 +1561,24 @@ class Editor {
         console.debug(`[settings] init product list`);
 
         // hide color item block
-        // this.productItemBlock.style.display = 'none';
+        this.productItemBlock.style.display = 'none';
 
         // init colors block
         console.debug(`[ProductList] init product list`)
         this.productConfigs.forEach(product => {
             console.debug(`[ProductList] init product item ${product.type}`);
             const productItem = this.productItemBlock.cloneNode(true) as HTMLElement;
-            // productItem.style.display = 'table';
+            productItem.style.display = 'table';
 
             const productImageWrapperBlock = productItem.querySelector('.product-item-image')! as HTMLElement;
             const productImageBlock = this.getLastChild(productImageWrapperBlock)! as HTMLElement;
-            productImageBlock.style.backgroundImage = `url(${product.mockups[0]!.url})`;
-            productImageBlock.style.backgroundSize = 'cover';
-            productImageBlock.style.backgroundPosition = 'center';
-            productImageBlock.style.backgroundRepeat = 'no-repeat';
+            if (productImageBlock) {
+                productImageBlock.style.backgroundImage = `url(${product.mockups[0]!.url})`;
+                productImageBlock.style.backgroundSize = 'cover';
+                productImageBlock.style.backgroundPosition = 'center';
+                productImageBlock.style.backgroundRepeat = 'no-repeat';
+            }
+
 
             const productTextBlockWrapper = productItem.querySelector('.product-item-text')! as HTMLElement;
             const productTextBlock = this.getLastChild(productTextBlockWrapper)! as HTMLElement;
@@ -966,6 +1590,8 @@ class Editor {
             productBlock.style.borderColor = "transparent";
 
             productItem.onclick = () => this.changeProduct(product.type)
+
+            this.productBlocks.push(productBlock);
 
             this.productListBlock.firstElementChild!.appendChild(productItem);
         });
@@ -988,6 +1614,8 @@ class Editor {
     loadProduct() {
         const product = this.productConfigs.find(product => product.type === this.selectType)!;
 
+        this.clearAllCanvas();
+
         if (!product || !product.printConfig) {
             console.warn("[product] product or printConfig not found");
             return;
@@ -1006,6 +1634,11 @@ class Editor {
     }
 
     createCanvasForSide(printConfig: any) {
+        if (!this.canvasesContainer) {
+            console.error("[canvas] canvasesContainer is not initialized");
+            return;
+        }
+
         const layersCanvasBlock = document.createElement("canvas");
         layersCanvasBlock.id = "layers--" + printConfig.side;
         layersCanvasBlock.classList.add('editor-position');
@@ -1026,6 +1659,11 @@ class Editor {
         edtableCanvasBlock.setAttribute("ref", printConfig.side);
         edtableCanvasBlock.classList.add('editor-position');
         edtableCanvasBlock.style.zIndex = '9';
+
+        if (!this.canvasesContainer) {
+            console.error("[canvas] canvasesContainer is not initialized for editable canvas");
+            return;
+        }
 
         this.canvasesContainer.appendChild(edtableCanvasBlock);
 
@@ -1078,7 +1716,7 @@ class Editor {
             top,
             fill: "rgba(0,0,0,0)",
             strokeWidth: 3,
-            stroke: "rgb(255, 155, 62)",
+            stroke: "rgb(254, 94, 58)",
             name: "area:border",
             opacity: 0.3,
             evented: false,
@@ -1164,7 +1802,7 @@ class Editor {
                     const guideline = this.getObject("guideline:vertical", canvas);
                     if (!guideline) {
                         const verticalGuideline = new fabric.Line([left + width / 2, 0, left + width / 2, this.editorBlock.clientHeight], {
-                            stroke: "rgb(255, 155, 62)",
+                            stroke: "rgb(254, 94, 58)",
                             strokeWidth: 2,
                             strokeDashArray: [5, 5],
                             selectable: false,
@@ -1188,7 +1826,7 @@ class Editor {
                     const guideline = this.getObject("guideline:horizontal", canvas);
                     if (!guideline) {
                         const horizontalGuideline = new fabric.Line([0, top + height / 2, this.editorBlock.clientWidth, top + height / 2], {
-                            stroke: "rgb(255, 155, 62)",
+                            stroke: "rgb(254, 94, 58)",
                             strokeWidth: 2,
                             strokeDashArray: [5, 5],
                             selectable: false,
@@ -1324,23 +1962,30 @@ class Editor {
     changeProduct(productType: Product['type']) {
         this.selectType = productType;
         this.changeProductName(productType);
-        this.selectColor = this.productConfigs.find(product => product.type === this.selectType)!.mockups[0]!.color;
-        this.selectSide = this.productConfigs.find(product => product.type === this.selectType)!.mockups[0]!.side;
 
-        // Очищаем старые canvas
-        // this.clearAllCanvas();
-
-        // Пересоздаем canvas для нового продукта
-        // this.loadProduct();
-
-        // Обновляем настройки для нового продукта
-        // this.updateSettings();
+        if (this.selectType) {
+            this.productBlocks.forEach(productBlock => {
+                productBlock.style.borderColor = "transparent";
+            });
+            this.productBlocks.find(productBlock => productBlock.classList.contains('editor-settings__product-block__' + this.selectType))!.style.borderColor = "";
+        } else {
+            console.warn(`[settings] [products] product ${this.selectType} not found. Select first product`);
+        }
 
         this.updateMockup();
+        this.loadProduct();
+        this.showLayoutList();
+        this.updateLayouts();
+        this.updateSum();
         // this.saveState();
     }
 
     changeProductName(productType: Product['type']) {
+        if (!this.editorProductName) {
+            console.error("[settings] [product] editorProductName is not initialized");
+            return;
+        }
+
         const getChild = (elem: HTMLElement) => {
             return elem.lastElementChild as HTMLElement;
         }
@@ -1358,6 +2003,9 @@ class Editor {
         this.updateMockup();
         this.showLayoutList();
         this.saveState();
+
+        // Сохраняем в историю при изменении стороны
+        this.saveToHistory(`Изменена сторона на: ${newSide}`);
     }
 
     changeColor(colorName: Color['name']) {
@@ -1378,6 +2026,9 @@ class Editor {
 
         this.updateMockup();
         this.saveState();
+
+        // Сохраняем в историю при изменении цвета
+        this.saveToHistory(`Изменен цвет на: ${colorName}`);
     }
 
     addLayout(layout: Layout) {
@@ -1385,71 +2036,340 @@ class Editor {
         this.layouts.push(layout);
         this.saveState();
         this.showLayoutList();
+
+        // Сохраняем в историю при добавлении макета
+        this.saveToHistory(`Добавлен макет: ${layout.name || layout.type}`);
         this.updateLayouts();
+        this.updateSum();
         // this.addLayoutToCanvas(layout);
     }
 
     removeLayout(layout: Layout) {
+        const layoutName = layout.name || layout.type;
         this.layouts = this.layouts.filter(fLayout => fLayout.id !== layout.id);
+
+        if (this.selectLayout === layout.id) {
+            this.selectLayout = null;
+        }
 
         this.saveState();
         this.showLayoutList();
+
+        // Сохраняем в историю при удалении макета
+        this.saveToHistory(`Удален макет: ${layoutName}`);
         this.updateLayouts();
+        this.updateSum();
     }
 
-    saveState() {
-        console.debug(`[state] save state `);
-        localStorage.setItem("editor-state-date", new Date().toISOString());
-        localStorage.setItem("editor-state-color", this.selectColor.name);
-        localStorage.setItem("editor-state-side", this.selectSide);
-        localStorage.setItem("editor-state-type", this.selectType);
-        localStorage.setItem("editor-state-layouts", JSON.stringify(this.layouts));
-        localStorage.setItem("editor-state-size", this.selectSize);
+    getSum() {
+        const hasFront = this.layouts.some(layout => layout.view === 'front');
+        const hasBack = this.layouts.some(layout => layout.view === 'back');
+
+        if (hasBack && hasFront) {
+            return 1920 + 500;
+        }
+
+        if (hasBack || hasFront) {
+            return 1920;
+        }
+
+        return 0;
     }
 
-    loadState() {
-        console.debug(`[state] load state`);
-        const date = localStorage.getItem("editor-state-date");
+    updateSum() {
+        const sum = this.getSum();
 
-        if (date) {
-            if (new Date(date).getTime() > new Date().getTime() - 1000 * 60 * 60 * 24 * 30) {
-                console.debug(`[state] load state from localStorage`);
-                const type = localStorage.getItem("editor-state-type");
-                const color = localStorage.getItem("editor-state-color");
-                const side = localStorage.getItem("editor-state-side");
-                const layouts = localStorage.getItem("editor-state-layouts");
-                const size = localStorage.getItem("editor-state-size");
-
-                if (size) {
-                    this.selectSize = size as Size;
-                }
-
-                if (type && color && side) {
-                    this.selectType = type as Product['type'];
-                    this.selectColor = this.productConfigs.find(product => product.type === this.selectType)!.mockups.find(mockup => mockup.color.name === color)!.color;
-                    this.selectSide = side as SideEnum;
-                    try {
-                        this.layouts = layouts ? JSON.parse(layouts) : [];
-                    } catch (error) {
-                        console.warn("[state] load state from localStorage is not valid");
-                        this.layouts = [];
-                    }
-                    this.updateMockup();
-                } else {
-                    console.warn("[state] load state from localStorage is not valid");
-                }
-            } else {
-                console.warn("[state] load state from localStorage is expired");
+        if (sum === 0) {
+            const buttonBlock = this.getLastChild(this.editorAddOrderButton);
+            if (buttonBlock) {
+                buttonBlock.style.backgroundColor = "rgb(121 121 121)";
             }
         } else {
-            console.debug("[state] load state from localStorage is not found");
-            localStorage.removeItem("editor-state-date");
-            localStorage.removeItem("editor-state-color");
-            localStorage.removeItem("editor-state-side");
-            localStorage.removeItem("editor-state-type");
+            const buttonBlock = this.getLastChild(this.editorAddOrderButton);
+            if (buttonBlock) {
+                buttonBlock.style.backgroundColor = "";
+            }
+        }
+
+        const sumBlock = this.getLastChild(this.editorSumBlock);
+
+        if (sumBlock) {
+            sumBlock.innerText = sum.toString() + " ₽";
         }
     }
 
+    async saveState() {
+        console.debug(`[state] save state `);
+        try {
+            const editorState: EditorState = {
+                date: new Date().toISOString(),
+                color: this.selectColor.name,
+                side: this.selectSide,
+                type: this.selectType,
+                layouts: this.layouts,
+                size: this.selectSize
+            };
+            await (this.storageManager as any).saveEditorState(editorState);
+        } catch (error) {
+            console.error('[state] Ошибка сохранения состояния:', error);
+        }
+    }
+
+    async loadState() {
+        console.debug(`[state] load state`);
+        let stateLoaded = false;
+
+        try {
+            const editorState = await (this.storageManager as any).loadEditorState();
+
+            if (editorState) {
+                const date = new Date(editorState.date);
+                const thirtyDaysAgo = new Date().getTime() - 1000 * 60 * 60 * 24 * 30;
+
+                if (date.getTime() > thirtyDaysAgo) {
+                    console.debug(`[state] load state from IndexedDB`);
+
+                    if (editorState.size) {
+                        this.selectSize = editorState.size as Size;
+                    }
+
+                    if (editorState.type && editorState.color && editorState.side) {
+                        this.selectType = editorState.type as Product['type'];
+
+                        // Безопасно найти цвет
+                        const colorMockup = this.productConfigs
+                            .find(product => product.type === this.selectType)
+                            ?.mockups.find(mockup => mockup.color.name === editorState.color);
+
+                        if (colorMockup) {
+                            this.selectColor = colorMockup.color;
+                            this.selectSide = editorState.side as SideEnum;
+                            this.layouts = editorState.layouts || [];
+                            stateLoaded = true;
+                            console.debug("[state] Состояние успешно загружено из IndexedDB");
+                        } else {
+                            console.warn("[state] Цвет не найден в конфигурации:", editorState.color);
+                        }
+                    } else {
+                        console.warn("[state] load state from IndexedDB is not valid");
+                    }
+                } else {
+                    console.warn("[state] load state from IndexedDB is expired");
+                    await (this.storageManager as any).clearEditorState();
+                }
+            } else {
+                console.debug("[state] load state from IndexedDB is not found");
+            }
+        } catch (error) {
+            console.error('[state] Ошибка загрузки состояния:', error);
+        }
+
+        // ВСЕГДА обновляем интерфейс после попытки загрузки состояния
+        this.updateMockup();
+        this.initColorsList();
+        this.initSizesList();
+        this.showLayoutList();
+        this.updateLayouts(); // Обновляем слои на канвасе
+        this.updateSum(); // Обновляем сумму заказа
+        this.changeProduct(this.selectType)
+
+        if (!stateLoaded) {
+            console.debug("[state] Используются дефолтные значения");
+        }
+    }
+
+    // Метод для миграции данных из localStorage в IndexedDB
+    private async migrateFromLocalStorage(): Promise<void> {
+        try {
+            // Мигрируем состояние редактора
+            const date = localStorage.getItem("editor-state-date");
+            if (date) {
+                console.log('[migration] Найдены данные в localStorage, выполняем миграцию...');
+
+                const color = localStorage.getItem("editor-state-color");
+                const side = localStorage.getItem("editor-state-side");
+                const type = localStorage.getItem("editor-state-type");
+                const layouts = localStorage.getItem("editor-state-layouts");
+                const size = localStorage.getItem("editor-state-size");
+
+                if (color && side && type && size) {
+                    const editorState: EditorState = {
+                        date,
+                        color,
+                        side,
+                        type,
+                        layouts: layouts ? JSON.parse(layouts) : [],
+                        size
+                    };
+
+                    await (this.storageManager as any).saveEditorState(editorState);
+                    console.log('[migration] Состояние редактора успешно мигрировано в IndexedDB');
+
+                    // Очищаем localStorage после успешной миграции
+                    localStorage.removeItem("editor-state-date");
+                    localStorage.removeItem("editor-state-color");
+                    localStorage.removeItem("editor-state-side");
+                    localStorage.removeItem("editor-state-type");
+                    localStorage.removeItem("editor-state-layouts");
+                    localStorage.removeItem("editor-state-size");
+                }
+            }
+
+            // Мигрируем userId
+            const userId = localStorage.getItem('userId');
+            if (userId) {
+                console.log('[migration] Мигрируем userId...');
+                // Просто удаляем из localStorage - новый userId будет создан автоматически при первом обращении
+                localStorage.removeItem('userId');
+                console.log('[migration] userId удален из localStorage');
+            }
+
+            if (date || userId) {
+                console.log('[migration] localStorage очищен');
+            }
+        } catch (error) {
+            console.error('[migration] Ошибка при миграции данных:', error);
+        }
+    }
+
+    // Асинхронная инициализация редактора
+    private async initializeEditor(): Promise<void> {
+        try {
+            // Ждем инициализации хранилища и миграции
+            await this.storageManager.waitForReady();
+
+            // Загружаем состояние из базы данных
+            await this.loadState();
+
+            console.debug('[editor] Инициализация завершена');
+        } catch (error) {
+            console.error('[editor] Ошибка инициализации:', error);
+
+            // Если ошибка - все равно отрисовываем с дефолтными значениями
+            this.initializeWithDefaults();
+        }
+    }
+
+    // Инициализация с дефолтными значениями
+    private initializeWithDefaults(): void {
+        console.debug('[editor] Инициализация с дефолтными значениями');
+        this.updateMockup();
+        this.initColorsList();
+        this.initSizesList();
+        this.showLayoutList();
+        this.updateLayouts(); // Обновляем слои на канвасе
+        this.updateSum(); // Обновляем сумму заказа
+    }
+
+    // Сохранить текущее состояние в историю
+    async saveToHistory(description?: string): Promise<string | null> {
+        try {
+            const historyItem = {
+                side: this.selectSide,
+                type: this.selectType,
+                color: this.selectColor.name,
+                size: this.selectSize,
+                layouts: JSON.parse(JSON.stringify(this.layouts)) // глубокое копирование
+            };
+
+            console.debug('[history] Сохранение состояния в историю:', historyItem);
+            const id = await (this.storageManager as any).saveToHistory(historyItem, description);
+            console.debug('[history] Состояние сохранено с ID:', id);
+            return id;
+        } catch (error) {
+            console.error('[history] Ошибка при сохранении в историю:', error);
+            return null;
+        }
+    }
+
+    // Восстановить состояние из истории по ID
+    async restoreFromHistory(historyId: string): Promise<boolean> {
+        try {
+            console.debug('[history] Восстановление состояния с ID:', historyId);
+            const historyItem = await (this.storageManager as any).getHistoryItem(historyId);
+
+            if (!historyItem) {
+                console.warn('[history] Элемент истории не найден:', historyId);
+                return false;
+            }
+
+            // Проверяем, подходит ли этот элемент для текущего продукта
+            if (historyItem.type !== this.selectType) {
+                console.warn('[history] Тип продукта не совпадает:', historyItem.type, '!=', this.selectType);
+                return false;
+            }
+
+            // Восстанавливаем состояние
+            this.selectSide = historyItem.side;
+            this.selectSize = historyItem.size as Size;
+
+            // Находим цвет по названию
+            const colorMockup = this.productConfigs
+                .find(product => product.type === this.selectType)!
+                .mockups.find(mockup => mockup.color.name === historyItem.color);
+
+            if (colorMockup) {
+                this.selectColor = colorMockup.color;
+            } else {
+                console.warn('[history] Цвет не найден:', historyItem.color);
+            }
+
+            // Восстанавливаем макеты
+            this.layouts = historyItem.layouts;
+
+            // Обновляем интерфейс
+            this.updateMockup();
+            this.showLayoutList();
+            this.updateLayouts(); // Обновляем слои на канвасе
+            this.updateSum(); // Обновляем сумму заказа
+
+            console.debug('[history] Состояние успешно восстановлено');
+            return true;
+        } catch (error) {
+            console.error('[history] Ошибка при восстановлении из истории:', error);
+            return false;
+        }
+    }
+
+    // Получить историю для текущего продукта и стороны
+    async getHistoryForCurrentState(limit: number = 20): Promise<HistoryItem[]> {
+        try {
+            const filter: HistoryFilter = {
+                side: this.selectSide,
+                type: this.selectType
+            };
+            return await (this.storageManager as any).getHistory(filter, limit);
+        } catch (error) {
+            console.error('[history] Ошибка при получении истории:', error);
+            return [];
+        }
+    }
+
+    // Очистить историю для текущего продукта и стороны
+    async clearCurrentHistory(): Promise<void> {
+        try {
+            const filter: HistoryFilter = {
+                side: this.selectSide,
+                type: this.selectType
+            };
+            await (this.storageManager as any).clearHistory(filter);
+            console.debug('[history] История очищена для', filter);
+        } catch (error) {
+            console.error('[history] Ошибка при очистке истории:', error);
+        }
+    }
+
+    // Удалить конкретный элемент из истории
+    async deleteFromHistory(historyId: string): Promise<boolean> {
+        try {
+            await (this.storageManager as any).deleteHistoryItem(historyId);
+            console.debug('[history] Элемент удален из истории:', historyId);
+            return true;
+        } catch (error) {
+            console.error('[history] Ошибка при удалении из истории:', error);
+            return false;
+        }
+    }
 
     loadImage(src: string): Promise<HTMLImageElement> {
         return new Promise((resolve, reject) => {
@@ -1545,6 +2465,7 @@ const editor = new Editor({
         productItemTextClass: '.product-item-text',
         editorSumBlockClass: '.editor-sum',
         editorSettingsBlockClass: '.editor-settings',
+        editorHistoryBlockClass: '.editor-history',
         editorClipImageBlockClass: '.editor-settings__clip-image',
         editorAddOrderButtonClass: '.editor-settings__add-order-button',
         editorProductNameClass: '.editor-settings__product-name',
@@ -1557,6 +2478,11 @@ const editor = new Editor({
         editorLayoutItemBlockViewClass: '.editor-layouts__layout-item-view',
         editorLayoutItemBlockNameClass: '.editor-layouts__layout-item-name',
         editorLayoutItemBlockRemoveClass: '.editor-layouts__layout-item-remove',
+        editorLayoutItemBlockEditClass: '.editor-layouts__layout-item-edit',
+        editorUploadImageButtonClass: '.editor-upload-image-button',
+        editorUploadViewBlockClass: '.editor-upload-view-block',
+        editorUploadCanselButtonClass: '.editor-upload-cansel-button',
+        editorQuantityFormBlockClass: '.editor-quantity-form',
     },
     formConfig: {
         formBlockClass: '.editor-form',
@@ -1566,7 +2492,7 @@ const editor = new Editor({
     productConfigs: [
         {
             type: 'tshirt',
-            productName: 'Футболка с собственным дизайном',
+            productName: 'Футболка',
             sizes: ["S", "M", "L", "XL", "2XL"],
             printConfig: [
                 {
@@ -1617,7 +2543,7 @@ const editor = new Editor({
         },
         {
             type: 'hoodie',
-            productName: 'Худи с собственным дизайном',
+            productName: 'Толстовка',
             sizes: ["S", "M", "L", "XL", "2XL"],
             printConfig: [
                 {
@@ -1669,24 +2595,52 @@ const editor = new Editor({
     ],
 });
 
-async function generateImage(prompt: string) {
-    const userId = localStorage.getItem('userId') || (() => {
-        const id = crypto.randomUUID();
-        localStorage.setItem('userId', id);
-        return id;
-    })();
+async function generateImage(prompt: string, shirtColor: string, image?: string, layoutId?: Layout['id']) {
+    // Получаем EditorStorageManager из глобального контекста (если он там есть)
+    // или создаем временный экземпляр
+    const tempStorageManager = new EditorStorageManager();
+    const userId = await (tempStorageManager as any).getUserId();
 
 
     const formData = new FormData();
-    formData.append('userId', userId);
-    formData.append('prompt', prompt);
-    formData.append('shirtColor', 'white');
-    formData.append('placement', 'center');
-    formData.append('printSize', "big");
-    formData.append('transferType', '');
-    formData.append('request_type', 'generate');
+    formData.set('userId', userId);
+    formData.set('prompt', prompt);
+    formData.set('shirtColor', shirtColor);
+    formData.set('placement', 'center');
+    formData.set('printSize', "big");
+    formData.set('transferType', '');
+    formData.set('request_type', 'generate');
 
-    const response = await fetch("https://primary-production-654c.up.railway.app/webhook/request-test", {
+    if (image) {
+        console.debug('[generate image]', image);
+
+        const [header, data] = image.split(',');
+        const type = header!.split(':')[1]!.split(';')[0]!;
+
+        console.debug('[generate image] [type]', type);
+
+        const byteCharacters = atob(data!);
+        const byteNumbers = new Array(byteCharacters.length);
+
+        for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+
+        const byteArray = new Uint8Array(byteNumbers);
+
+
+        formData.set('request_type', 'image');
+        formData.set('user_image', new Blob([byteArray], { type: "image/png" }));
+        formData.set('transferType', "ai");
+    }
+
+    if (layoutId) {
+        formData.set('request_type', 'edit');
+        formData.set('layoutId', layoutId);
+    }
+
+
+    const response = await fetch("https://primary-production-654c.up.railway.app/webhook/request", {
         method: "POST",
         body: formData,
     });
@@ -1701,30 +2655,38 @@ type CardProduct = {
 }
 
 type CreateProductProps = {
+    quantity: number;
+    name: string;
     size: Size;
     color: Color;
     sides: { image_url: string }[];
 }
 
-function createProduct({ size, color, sides }: CreateProductProps) {
-    const productId = `69834164283_` + Date.now();
+function createProduct({ quantity, name, size, color, sides }: CreateProductProps) {
+    const productId = (Math.random() + 1).toString(36).substring(7) + "_" + Date.now();
 
     const resultProduct = {
         id: productId,
-        name: `Футболка с вашим ${sides.length == 1 ? 'односторонним' : 'двухсторонним'} принтом`,
+        name,
         price: sides.length == 1 ? 1990 : 1990 + 500,
-        quantity: 1,
+        quantity: quantity,
         img: sides[0]?.image_url,
         options: [
+            { option: 'Артикул', variant: Math.floor(Math.random() * (999999999 - 999999 + 1) + 999999) },
             { option: 'Размер', variant: size },
             { option: 'Цвет', variant: color.name },
+            { option: 'Принт', variant: sides.length == 1 ? 'Односторонний' : 'Двухсторонний' },
         ]
     };
 
     console.debug('[cart] add product', resultProduct);
 
     if (typeof (window as any).tcart__addProduct === 'function') {
-        (window as any).tcart__addProduct(resultProduct);
+        try {
+            (window as any).tcart__addProduct(resultProduct);
+        } catch (error) {
+            console.error('[cart] Ошибка при добавлении продукта в корзину', error);
+        }
     } else {
         console.warn('[cart] Корзина Tilda не загружена.');
     }
@@ -1735,7 +2697,7 @@ function createProduct({ size, color, sides }: CreateProductProps) {
 (window as any).addTestLayout = () => {
     editor.addLayout(new ImageLayout({
         view: 'front',
-        url: 'https://upload.wikimedia.org/wikipedia/commons/5/5c/Telegram_Messenger.png',
+        url: 'https://static.tildacdn.com/tild3930-3533-4464-b830-623133666233/Group_20.svg',
         name: "test",
     }));
 }
@@ -1906,8 +2868,6 @@ class CardForm {
         }
 
         this.form = this.cardBlock.querySelector('form')! as HTMLFormElement;
-
-        console.log(this.form);
 
         if (!this.form) {
             console.error(`Form block with id ${cardBlockId} not found`);
