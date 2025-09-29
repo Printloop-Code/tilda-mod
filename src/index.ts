@@ -408,10 +408,12 @@ type EditorProps = {
         editorLayoutItemBlockRemoveClass: string;
         editorUploadImageButtonClass: string;
         editorUploadViewBlockClass: string;
-        editorUploadCanselButtonClass: string;
+        editorUploadCancelButtonClass: string;
         editorLayoutItemBlockEditClass: string;
         editorQuantityFormBlockClass: string;
         editorHistoryBlockClass: string;
+        editorLoadWithAiButtonClass: string;
+        editorLoadWithoutAiButtonClass: string;
     }
     formConfig?: {
         formBlockClass: string;
@@ -478,7 +480,7 @@ class Editor {
     loadedUserImage: string | null = null;
     editorUploadImageButton: HTMLElement;
     editorUploadViewBlock: HTMLElement;
-    editorUploadCanselButton: HTMLElement;
+    editorUploadCancelButton: HTMLElement;
     editorLoadWithAi: boolean = false;
     editorLoadWithAiButton: HTMLElement;
     editorLoadWithoutAiButton: HTMLElement;
@@ -516,8 +518,11 @@ class Editor {
         this.editorLayoutItemBlock = document.querySelector(blocks.editorLayoutItemBlockClass)!;
         this.editorUploadImageButton = document.querySelector(blocks.editorUploadImageButtonClass)!;
         this.editorUploadViewBlock = document.querySelector(blocks.editorUploadViewBlockClass)!;
-        this.editorUploadCanselButton = document.querySelector(blocks.editorUploadCanselButtonClass)!;
+        this.editorUploadCancelButton = document.querySelector(blocks.editorUploadCancelButtonClass)!;
         this.editorHistoryBlock = document.querySelector(blocks.editorHistoryBlockClass)!;
+
+        this.editorLoadWithAiButton = document.querySelector(blocks.editorLoadWithAiButtonClass)!;
+        this.editorLoadWithoutAiButton = document.querySelector(blocks.editorLoadWithoutAiButtonClass)!;
 
         this.quantityFormBlock = document.querySelector(blocks.editorQuantityFormBlockClass)!;
 
@@ -639,6 +644,7 @@ class Editor {
         this.updateLayouts();
         this.updateSum();
 
+        this.preloadAllMockups();
         this.events.addEventListener('mockup-updated', (event) => {
             this.mockupBlock.src = (event as CustomEvent).detail;
         })
@@ -664,6 +670,7 @@ class Editor {
 
         this.events.addEventListener('mockup-loading', (event) => {
             if ((event as CustomEvent).detail) {
+                this.loadingTime = 0;
                 this.isLoading = true;
                 console.debug(`[mockup] loading mockup`);
 
@@ -683,6 +690,15 @@ class Editor {
         })
     }
 
+    async preloadAllMockups() {
+        for (const product of this.productConfigs) {
+            for (const mockup of product.mockups) {
+                const mockupDataUrl = await this.getImageData(mockup.url);
+                mockup.url = mockupDataUrl;
+            }
+        }
+    }
+
     initHistoryBlock() {
         console.debug('[history block] init');
 
@@ -693,10 +709,10 @@ class Editor {
 
         this.editorHistoryBlock.style.cursor = 'pointer';
 
-        this.editorHistoryBlock.addEventListener('click', () => {
+        this.editorHistoryBlock.onclick = () => {
             console.debug('[history block] clicked');
 
-        });
+        };
     }
 
     getQuantity() {
@@ -722,15 +738,15 @@ class Editor {
             editorUploadViewBlock.style.display = 'none';
         }
 
-        const editorUploadCanselButton = this.editorUploadCanselButton;
-        if (!editorUploadCanselButton) {
-            console.warn('Editor upload cansel button not found');
+        const editorUploadCancelButton = this.editorUploadCancelButton;
+        if (!editorUploadCancelButton) {
+            console.warn('Editor upload cancel button not found');
         } else {
-            editorUploadCanselButton.style.cursor = 'pointer';
+            editorUploadCancelButton.style.cursor = 'pointer';
         }
 
-        editorUploadCanselButton.addEventListener('click', () => {
-            console.debug('[upload image button] cansel button clicked');
+        editorUploadCancelButton.addEventListener('click', () => {
+            console.debug('[upload image button] cancel button clicked');
             this.resetUserUploadImage();
             this.loadedUserImage = null;
         });
@@ -747,8 +763,56 @@ class Editor {
         });
     }
 
+    changeLoadWithAi(value: boolean = false) {
+        this.editorLoadWithAi = value;
+
+        if (this.editorLoadWithAiButton && this.editorLoadWithoutAiButton) {
+            const buttonWithAi = this.editorLoadWithAiButton;
+            const buttonWithoutAi = this.editorLoadWithoutAiButton;
+
+            if (value) {
+                const fixButtonWithAi = this.getLastChild(buttonWithAi);
+                const fixButtonWithoutAi = this.getLastChild(buttonWithoutAi);
+                if (fixButtonWithAi) {
+                    fixButtonWithAi.style.borderColor = '';
+                }
+                if (fixButtonWithoutAi) {
+                    fixButtonWithoutAi.style.borderColor = '#f2f2f2';
+                }
+            } else {
+                const fixButtonWithAi = this.getLastChild(buttonWithAi);
+                const fixButtonWithoutAi = this.getLastChild(buttonWithoutAi);
+                if (fixButtonWithAi) {
+                    fixButtonWithAi.style.borderColor = '#f2f2f2';
+                }
+                if (fixButtonWithoutAi) {
+                    fixButtonWithoutAi.style.borderColor = '';
+                }
+            }
+
+        }
+    }
+
     uploadUserImage() {
         console.debug('[upload user image] starting user image upload');
+
+        this.editorLoadWithAi = false;
+
+        this.changeLoadWithAi();
+
+        if (this.editorLoadWithAiButton) {
+            this.editorLoadWithAiButton.style.cursor = 'pointer';
+            this.editorLoadWithAiButton.onclick = () => {
+                this.changeLoadWithAi(true);
+            }
+        }
+
+        if (this.editorLoadWithoutAiButton) {
+            this.editorLoadWithoutAiButton.style.cursor = 'pointer';
+            this.editorLoadWithoutAiButton.onclick = () => {
+                this.changeLoadWithAi(false);
+            }
+        }
 
         // Создаем input элемент для выбора файла
         const fileInput = document.createElement('input');
@@ -835,16 +899,38 @@ class Editor {
 
             const exportedArt = await this.exportArt();
 
+            const sides = Object.keys(exportedArt).map(side => ({
+                image_url: exportedArt[side] || '',
+            }));
+
+            for (const side of sides) {
+                side.image_url = await this.uploadImage(side.image_url.split(',')[1]!);
+            }
+
             createProduct({
                 quantity: this.getQuantity(),
                 name: `${this.capitalizeFirstLetter(this.getProductName())} с вашим ${Object.keys(exportedArt).length == 1 ? 'односторонним' : 'двухсторонним'} принтом`,
                 size: this.selectSize,
                 color: this.selectColor,
-                sides: Object.keys(exportedArt).map(side => ({
-                    image_url: exportedArt[side] || '',
-                })),
+                sides,
             });
         }
+    }
+
+    async uploadImage(base64: string) {
+        const tempStorageManager = new EditorStorageManager();
+        const userId = await (tempStorageManager as any).getUserId();
+
+        const response = await fetch('https://1804633-image.fl.gridesk.ru/upload', {
+            method: 'POST',
+            body: JSON.stringify({ image: base64, user_id: userId }),
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        });
+
+        const data = await response.json();
+        return data.image_url;
     }
 
     getProductName() {
@@ -1288,8 +1374,9 @@ class Editor {
             if (previewBlock) {
                 if (layout.type === 'image') {
                     (previewBlock.firstElementChild! as HTMLElement).style.backgroundImage = `url(${(layout as ImageLayout).url})`;
-                    (previewBlock.firstElementChild! as HTMLElement).style.backgroundSize = "cover";
+                    (previewBlock.firstElementChild! as HTMLElement).style.backgroundSize = "contain";
                     (previewBlock.firstElementChild! as HTMLElement).style.backgroundPosition = "center";
+                    (previewBlock.firstElementChild! as HTMLElement).style.backgroundRepeat = "no-repeat";
                 } else if (layout.type === 'text') { }
             }
 
@@ -1346,10 +1433,18 @@ class Editor {
             const formInput = formBlock.querySelector(`[name="${formInputVariableName}"]`) as HTMLInputElement;
             const prompt = formInput.value;
 
-            if (!prompt || prompt.trim() === "" || prompt.length < 3) {
-                console.warn('[form] [input] prompt is empty or too short');
-                alert("Минимальная длина запроса 3 символа");
-                return;
+            if (this.loadedUserImage && this.editorLoadWithAi) {
+                if (!prompt || prompt.trim() === "" || prompt.length < 3) {
+                    console.warn('[form] [input] prompt is empty or too short');
+                    alert("Минимальная длина запроса 3 символа");
+                    return;
+                }
+            } else if (!this.loadedUserImage) {
+                if (!prompt || prompt.trim() === "" || prompt.length < 3) {
+                    console.warn('[form] [input] prompt is empty or too short');
+                    alert("Минимальная длина запроса 3 символа");
+                    return;
+                }
             }
 
             console.debug(`[form] [input] prompt: ${prompt}`);
@@ -1357,7 +1452,7 @@ class Editor {
             this.events.dispatchEvent(new CustomEvent('mockup-loading', { detail: true }));
             try {
 
-                const url = await generateImage(prompt, this.selectColor.name, this.loadedUserImage!, this.selectLayout!);
+                const url = await generateImage(prompt, this.selectColor.name, this.loadedUserImage!, this.editorLoadWithAi, this.selectLayout!);
                 this.events.dispatchEvent(new CustomEvent('mockup-loading', { detail: false }));
 
                 const imageData = await this.getImageData(url);
@@ -2481,8 +2576,10 @@ const editor = new Editor({
         editorLayoutItemBlockEditClass: '.editor-layouts__layout-item-edit',
         editorUploadImageButtonClass: '.editor-upload-image-button',
         editorUploadViewBlockClass: '.editor-upload-view-block',
-        editorUploadCanselButtonClass: '.editor-upload-cansel-button',
+        editorUploadCancelButtonClass: '.editor-upload-cancel-button',
         editorQuantityFormBlockClass: '.editor-quantity-form',
+        editorLoadWithAiButtonClass: '.editor-load-with-ai-button',
+        editorLoadWithoutAiButtonClass: '.editor-load-without-ai-button',
     },
     formConfig: {
         formBlockClass: '.editor-form',
@@ -2595,7 +2692,7 @@ const editor = new Editor({
     ],
 });
 
-async function generateImage(prompt: string, shirtColor: string, image?: string, layoutId?: Layout['id']) {
+async function generateImage(prompt: string, shirtColor: string, image?: string, withAi: boolean = false, layoutId?: Layout['id']) {
     // Получаем EditorStorageManager из глобального контекста (если он там есть)
     // или создаем временный экземпляр
     const tempStorageManager = new EditorStorageManager();
@@ -2631,7 +2728,7 @@ async function generateImage(prompt: string, shirtColor: string, image?: string,
 
         formData.set('request_type', 'image');
         formData.set('user_image', new Blob([byteArray], { type: "image/png" }));
-        formData.set('transferType', "ai");
+        formData.set('transferType', withAi ? "ai" : "no-ai");
     }
 
     if (layoutId) {
