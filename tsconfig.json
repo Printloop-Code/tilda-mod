@@ -2,6 +2,8 @@
     "compilerOptions": {
         "target": "ES2020",
         "module": "es6",
+        "moduleResolution": "node",
+        "baseUrl": "./src",
         "lib": [
             "ES6",
             "DOM",
@@ -28,7 +30,8 @@
         "resolveJsonModule": false
     },
     "include": [
-        "src/**/*"
+        "src/**/*",
+        "index.ts.back"
     ],
     "exclude": [
         "node_modules",

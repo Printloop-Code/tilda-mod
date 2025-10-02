@@ -1,0 +1,2668 @@
+import type { EditorProps, Product, Size, Color, SideEnum, LayoutProps, CreateProductProps, EditorState } from '../types';
+import { EditorStorageManager } from '../managers/EditorStorageManager';
+import { Layout } from '../models/Layout';
+import { getLastChild } from '../utils/tildaUtils';
+import { TypedEventEmitter } from '../utils/TypedEventEmitter';
+import { generateImage, createProduct } from '../utils/api';
+
+// Объявление глобальной переменной fabric
+declare const fabric: any;
+
+// Константы
+const CONSTANTS = {
+    STATE_EXPIRATION_DAYS: 30,
+    CANVAS_AREA_HEIGHT: 600,
+    LOADING_INTERVAL_MS: 100,
+} as const;
+
+// Типы событий редактора
+export enum EditorEventType {
+    MOCKUP_LOADING = 'mockup-loading',
+    MOCKUP_UPDATED = 'mockup-updated',
+    LOADING_TIME_UPDATED = 'loading-time-updated',
+    STATE_CHANGED = 'state-changed',
+    LAYOUT_ADDED = 'layout-added',
+    LAYOUT_REMOVED = 'layout-removed',
+    LAYOUT_UPDATED = 'layout-updated',
+}
+
+export type EditorEventMap = {
+    [EditorEventType.MOCKUP_LOADING]: boolean;
+    [EditorEventType.MOCKUP_UPDATED]: string;
+    [EditorEventType.LOADING_TIME_UPDATED]: number;
+    [EditorEventType.STATE_CHANGED]: void;
+    [EditorEventType.LAYOUT_ADDED]: Layout;
+    [EditorEventType.LAYOUT_REMOVED]: Layout['id'];
+    [EditorEventType.LAYOUT_UPDATED]: Layout;
+};
+
+// Интерфейсы для хранения состояния
+
+// Элемент истории слоёв (для undo/redo)
+interface LayersHistoryItem {
+    layers: Layout[];
+    timestamp: number;
+}
+
+export default class Editor {
+    // DOM элементы (readonly после инициализации)
+    private readonly editorBlock: HTMLElement;
+    private readonly changeSideButton: HTMLElement;
+    private readonly canvasesContainer: HTMLElement;
+    private readonly editorLoadingBlock: HTMLElement;
+    private readonly editorHistoryUndoBlock: HTMLElement;
+    private readonly editorHistoryRedoBlock: HTMLElement;
+    private readonly quantityFormBlock: HTMLElement | null = null;
+    private mockupBlock: HTMLImageElement;
+
+    // Дополнительные UI элементы из старой реализации
+    private productListBlock?: HTMLElement;
+    private productItemBlock?: HTMLElement;
+    private editorColorsListBlock?: HTMLElement;
+    private editorColorItemBlock?: HTMLElement;
+    private editorSizesListBlock?: HTMLElement;
+    private editorSizeItemBlock?: HTMLElement;
+    private editorLayoutsListBlock?: HTMLElement;
+    private editorLayoutItemBlock?: HTMLElement;
+    private editorUploadImageButton?: HTMLElement;
+    private editorUploadViewBlock?: HTMLElement;
+    private editorUploadCancelButton?: HTMLElement;
+    private editorLoadWithAiButton?: HTMLElement;
+    private editorLoadWithoutAiButton?: HTMLElement;
+    private editorAddOrderButton?: HTMLElement;
+    private editorSumBlock?: HTMLElement;
+    private editorProductName?: HTMLElement;
+
+    // CSS классы для динамических элементов
+    private editorLayoutItemBlockViewClass?: string;
+    private editorLayoutItemBlockNameClass?: string;
+    private editorLayoutItemBlockRemoveClass?: string;
+    private editorLayoutItemBlockEditClass?: string;
+
+    // Форма
+    private formBlock: HTMLElement | null = null;
+    private formInputVariableName: string | null = null;
+    private formButton: HTMLElement | null = null;
+
+    // Менеджеры
+    private readonly storageManager: EditorStorageManager;
+
+    // Состояние (приватное, доступ через геттеры)
+    private _selectType: Product['type'];
+    private _selectColor: Color;
+    private _selectSide: SideEnum;
+    private _selectSize: Size;
+    private _selectLayout: Layout['id'] | null = null;
+
+    // Данные
+    private readonly productConfigs: Product[];
+    private layouts: Layout[] = [];
+
+    // Canvas данные (если будут использоваться)
+    canvases: fabric.Canvas[] = [];
+    layersCanvases: fabric.StaticCanvas[] = [];
+    activeCanvas: fabric.Canvas | null = null;
+
+    // События (типизированный EventEmitter)
+    readonly events = new TypedEventEmitter<EditorEventMap>();
+
+    // История слоёв (для undo/redo)
+    private layersHistory: LayersHistoryItem[] = [];
+    private currentHistoryIndex: number = -1;
+    private isRestoringFromHistory: boolean = false;
+
+    // Прочее
+    private isLoading: boolean = true;
+    private loadingTime: number = 0;
+    private loadingInterval: NodeJS.Timeout | null = null;
+
+    // Массивы для хранения UI элементов
+    private colorBlocks: HTMLElement[] = [];
+    private sizeBlocks: HTMLElement[] = [];
+    private productBlocks: HTMLElement[] = [];
+
+    // Состояние загрузки изображения
+    private loadedUserImage: string | null = null;
+    private editorLoadWithAi: boolean = false;
+
+    // Геттеры для состояния
+    get selectType(): Product['type'] { return this._selectType; }
+    get selectColor(): Color { return this._selectColor; }
+    get selectSide(): SideEnum { return this._selectSide; }
+    get selectSize(): Size { return this._selectSize; }
+    get selectLayout(): Layout['id'] | null { return this._selectLayout; }
+
+    constructor({ blocks, productConfigs, formConfig }: EditorProps) {
+        // Валидация конфигурации
+        if (!productConfigs || productConfigs.length === 0) {
+            throw new Error('[Editor] Не предоставлены конфигурации продуктов');
+        }
+
+        // Инициализация storage
+        this.storageManager = new EditorStorageManager();
+
+        // Конфигурация продуктов
+        this.productConfigs = productConfigs;
+
+        // Инициализация обязательных DOM элементов с проверкой
+        this.editorBlock = this.getRequiredElement(blocks.editorBlockClass);
+        this.changeSideButton = this.getRequiredElement(blocks.changeSideButtonClass);
+        this.editorHistoryUndoBlock = this.getRequiredElement(blocks.editorHistoryUndoBlockClass);
+        this.editorHistoryRedoBlock = this.getRequiredElement(blocks.editorHistoryRedoBlockClass);
+        this.quantityFormBlock = document.querySelector(blocks.editorQuantityFormBlockClass);
+
+        // Инициализация дополнительных DOM элементов (optional)
+        const productListBlock = document.querySelector(blocks.productListBlockClass);
+        if (productListBlock) this.productListBlock = productListBlock as HTMLElement;
+
+        const productItemBlock = document.querySelector(blocks.productItemClass);
+        if (productItemBlock) this.productItemBlock = productItemBlock as HTMLElement;
+
+        const editorColorsListBlock = document.querySelector(blocks.editorColorsListBlockClass);
+        if (editorColorsListBlock) this.editorColorsListBlock = editorColorsListBlock as HTMLElement;
+
+        const editorColorItemBlock = document.querySelector(blocks.editorColorItemBlockClass);
+        if (editorColorItemBlock) this.editorColorItemBlock = editorColorItemBlock as HTMLElement;
+
+        const editorSizesListBlock = document.querySelector(blocks.editorSizesListBlockClass);
+        if (editorSizesListBlock) this.editorSizesListBlock = editorSizesListBlock as HTMLElement;
+
+        const editorSizeItemBlock = document.querySelector(blocks.editorSizeItemBlockClass);
+        if (editorSizeItemBlock) this.editorSizeItemBlock = editorSizeItemBlock as HTMLElement;
+
+        const editorLayoutsListBlock = document.querySelector(blocks.editorLayoutsListBlockClass);
+        if (editorLayoutsListBlock) this.editorLayoutsListBlock = editorLayoutsListBlock as HTMLElement;
+
+        const editorLayoutItemBlock = document.querySelector(blocks.editorLayoutItemBlockClass);
+        if (editorLayoutItemBlock) this.editorLayoutItemBlock = editorLayoutItemBlock as HTMLElement;
+
+        const editorUploadImageButton = document.querySelector(blocks.editorUploadImageButtonClass);
+        if (editorUploadImageButton) this.editorUploadImageButton = editorUploadImageButton as HTMLElement;
+
+        const editorUploadViewBlock = document.querySelector(blocks.editorUploadViewBlockClass);
+        if (editorUploadViewBlock) this.editorUploadViewBlock = editorUploadViewBlock as HTMLElement;
+
+        const editorUploadCancelButton = document.querySelector(blocks.editorUploadCancelButtonClass);
+        if (editorUploadCancelButton) this.editorUploadCancelButton = editorUploadCancelButton as HTMLElement;
+
+        const editorLoadWithAiButton = document.querySelector(blocks.editorLoadWithAiButtonClass);
+        if (editorLoadWithAiButton) this.editorLoadWithAiButton = editorLoadWithAiButton as HTMLElement;
+
+        const editorLoadWithoutAiButton = document.querySelector(blocks.editorLoadWithoutAiButtonClass);
+        if (editorLoadWithoutAiButton) this.editorLoadWithoutAiButton = editorLoadWithoutAiButton as HTMLElement;
+
+        const editorAddOrderButton = document.querySelector(blocks.editorAddOrderButtonClass);
+        if (editorAddOrderButton) this.editorAddOrderButton = editorAddOrderButton as HTMLElement;
+
+        const editorSumBlock = document.querySelector(blocks.editorSumBlockClass);
+        if (editorSumBlock) this.editorSumBlock = editorSumBlock as HTMLElement;
+
+        const editorProductName = document.querySelector(blocks.editorProductNameClass);
+        if (editorProductName) this.editorProductName = editorProductName as HTMLElement;
+
+        // Сохранение CSS классов
+        this.editorLayoutItemBlockViewClass = blocks.editorLayoutItemBlockViewClass;
+        this.editorLayoutItemBlockNameClass = blocks.editorLayoutItemBlockNameClass;
+        this.editorLayoutItemBlockRemoveClass = blocks.editorLayoutItemBlockRemoveClass;
+        this.editorLayoutItemBlockEditClass = blocks.editorLayoutItemBlockEditClass;
+
+        // Инициализация формы если передана
+        if (formConfig) {
+            this.formBlock = document.querySelector(formConfig.formBlockClass);
+            this.formInputVariableName = formConfig.formInputVariableName;
+            this.formButton = document.querySelector(formConfig.formButtonClass);
+        }
+
+        // Установка дефолтных значений
+        const defaultProduct = productConfigs[0];
+        if (!defaultProduct) {
+            throw new Error('[Editor] Не найден дефолтный продукт');
+        }
+
+        const defaultMockup = defaultProduct.mockups[0];
+        if (!defaultMockup) {
+            throw new Error('[Editor] Не найден дефолтный mockup');
+        }
+
+        this._selectColor = defaultMockup.color;
+        this._selectSide = defaultMockup.side;
+        this._selectType = defaultProduct.type;
+        this._selectSize = defaultProduct.sizes?.[0] || 'M' as Size;
+
+        // Создание базовых блоков
+        this.editorBlock.style.position = 'relative';
+        this.createBackgroundBlock();
+        this.mockupBlock = this.createMockupBlock();
+        this.canvasesContainer = this.createCanvasesContainer();
+        this.editorLoadingBlock = this.createEditorLoadingBlock();
+
+        // Инициализация событий и клавиатурных сокращений
+        this.initEvents();
+        this.initKeyboardShortcuts();
+        this.initLoadingEvents();
+
+        // Инициализация UI компонентов
+        this.initUIComponents();
+
+        // Асинхронная инициализация (миграция и загрузка состояния)
+        this.initializeEditor();
+    }
+
+    // Инициализация UI компонентов
+    private initUIComponents(): void {
+        // Инициализация кнопки смены стороны
+        if (this.changeSideButton) {
+            this.changeSideButton.style.cursor = 'pointer';
+            this.changeSideButton.onclick = () => this.changeSide();
+        }
+
+        // Инициализация кнопок истории
+        if (this.editorHistoryUndoBlock) {
+            this.initHistoryUndoBlock();
+        }
+
+        if (this.editorHistoryRedoBlock) {
+            this.initHistoryRedoBlock();
+        }
+
+        // Инициализация списка продуктов
+        if (this.productListBlock && this.productItemBlock) {
+            this.initProductList();
+        }
+
+        // Инициализация кнопки добавления заказа
+        if (this.editorAddOrderButton) {
+            this.initAddOrderButton();
+        }
+
+        // Инициализация кнопки загрузки изображения
+        if (this.editorUploadImageButton) {
+            this.initUploadImageButton();
+        }
+
+        // Инициализация формы
+        if (this.formBlock && this.formButton) {
+            this.initForm();
+        }
+
+        // Инициализация quantity form fix
+        if (this.quantityFormBlock) {
+            setTimeout(() => this.initFixQuantityForm(), 500);
+        }
+
+        // Показ списка layouts
+        if (this.editorLayoutsListBlock) {
+            this.showLayoutList();
+        }
+    }
+
+    // Вспомогательный метод для получения обязательных DOM элементов
+    private getRequiredElement<T extends HTMLElement = HTMLElement>(selector: string): T {
+        const element = document.querySelector<T>(selector);
+        if (!element) {
+            throw new Error(`[Editor] Не найден обязательный элемент: ${selector}`);
+        }
+        return element;
+    }
+
+    private async initializeEditor(): Promise<void> {
+        try {
+            // Ожидание готовности storage
+            await this.storageManager.waitForReady();
+
+            // Загрузка сохраненного состояния
+            await this.loadState();
+
+            // Предзагрузка mockups
+            await this.preloadAllMockups();
+
+            console.debug('[editor] Инициализация завершена');
+        } catch (error) {
+            console.error('[editor] Ошибка инициализации:', error);
+            this.initializeWithDefaults();
+        }
+    }
+
+    private async initializeWithDefaults(): Promise<void> {
+        console.debug('[editor] Инициализация с дефолтными значениями');
+        try {
+            await this.updateMockup();
+        } catch (err) {
+            console.error('[editor] Ошибка загрузки mockup по умолчанию:', err);
+        }
+    }
+
+    private initEvents(): void {
+        // Обновление мокапа
+        this.events.on(EditorEventType.MOCKUP_UPDATED, (dataURL) => {
+            this.mockupBlock.src = dataURL;
+        });
+    }
+
+    private initLoadingEvents(): void {
+        // Событие обновления времени загрузки
+        this.events.on(EditorEventType.LOADING_TIME_UPDATED, (loadingTime) => {
+            if (this.isLoading) {
+                if (this.loadingTime > 5) {
+                    const loadingText = this.editorLoadingBlock.querySelector('#loading-text') as HTMLElement;
+                    const spinner = this.editorLoadingBlock.querySelector('#spinner') as HTMLElement;
+
+                    if (loadingText) {
+                        loadingText.style.display = "block";
+                        loadingText.innerText = `${(this.loadingTime / 10).toFixed(1)}`;
+                    }
+                    if (spinner) {
+                        spinner.style.display = "block";
+                    }
+                    this.editorLoadingBlock.style.backgroundColor = "rgba(255, 255, 255, 0.745)";
+                } else {
+                    const loadingText = this.editorLoadingBlock.querySelector('#loading-text') as HTMLElement;
+                    const spinner = this.editorLoadingBlock.querySelector('#spinner') as HTMLElement;
+
+                    if (loadingText) {
+                        loadingText.style.display = "none";
+                        loadingText.innerText = "";
+                    }
+                    if (spinner) {
+                        spinner.style.display = "none";
+                    }
+                    this.editorLoadingBlock.style.backgroundColor = "rgba(255, 255, 255, 0)";
+                }
+            } else {
+                const loadingText = this.editorLoadingBlock.querySelector('#loading-text') as HTMLElement;
+                if (loadingText) {
+                    loadingText.style.display = "none";
+                    loadingText.innerText = "";
+                }
+            }
+        });
+
+        // Событие начала/окончания загрузки мокапа
+        this.events.on(EditorEventType.MOCKUP_LOADING, (isLoading) => {
+            if (isLoading) {
+                // Начало загрузки
+                if (this.loadingInterval) {
+                    clearInterval(this.loadingInterval);
+                }
+                this.loadingTime = 0;
+                this.isLoading = true;
+                console.debug('[mockup] loading mockup');
+
+                this.loadingInterval = setInterval(() => {
+                    this.loadingTime++;
+                    this.emit(EditorEventType.LOADING_TIME_UPDATED, this.loadingTime);
+                }, 100);
+            } else {
+                // Окончание загрузки
+                this.editorLoadingBlock.style.backgroundColor = "rgba(255, 255, 255, 0)";
+
+                const loadingText = this.editorLoadingBlock.querySelector('#loading-text') as HTMLElement;
+                const spinner = this.editorLoadingBlock.querySelector('#spinner') as HTMLElement;
+
+                if (loadingText) {
+                    loadingText.style.display = "none";
+                    loadingText.innerText = "";
+                }
+                if (spinner) {
+                    spinner.style.display = "none";
+                }
+
+                this.isLoading = false;
+
+                if (this.loadingInterval) {
+                    clearInterval(this.loadingInterval);
+                    this.loadingInterval = null;
+                }
+                this.loadingTime = 0;
+            }
+        });
+    }
+
+
+    // Вспомогательный метод для отправки типизированных событий
+    private emit<K extends EditorEventType>(
+        type: K,
+        detail: EditorEventMap[K]
+    ): void {
+        this.events.emit(type, detail);
+    }
+
+    private initKeyboardShortcuts(): void {
+        document.addEventListener('keydown', (event) => {
+            const activeElement = document.activeElement as HTMLElement;
+            const isInputField = activeElement && (
+                activeElement.tagName === 'INPUT' ||
+                activeElement.tagName === 'TEXTAREA' ||
+                activeElement.contentEditable === 'true' ||
+                activeElement.isContentEditable
+            );
+
+            if (isInputField) return;
+
+            // Ctrl+Z - undo
+            if (event.ctrlKey && event.code === 'KeyZ' && !event.shiftKey) {
+                event.preventDefault();
+                this.undo();
+                return;
+            }
+
+            // Ctrl+Shift+Z или Ctrl+Y - redo
+            if ((event.ctrlKey && event.shiftKey && event.code === 'KeyZ') ||
+                (event.ctrlKey && event.code === 'KeyY' && !event.shiftKey)) {
+                event.preventDefault();
+                this.redo();
+                return;
+            }
+        });
+    }
+
+    private createBackgroundBlock(): HTMLElement {
+        const background = document.createElement('div');
+        background.classList.add('editor-position');
+        background.id = 'editor-background';
+        this.editorBlock.appendChild(background);
+        return background;
+    }
+
+    private createMockupBlock(): HTMLImageElement {
+        const mockup = document.createElement('img');
+        mockup.classList.add('editor-position');
+        mockup.id = 'editor-mockup';
+        this.editorBlock.appendChild(mockup);
+        return mockup;
+    }
+
+    private createCanvasesContainer(): HTMLElement {
+        const canvas = document.createElement('div');
+        canvas.classList.add('editor-position');
+        canvas.id = 'editor-canvases-container';
+        canvas.style.zIndex = '10';
+        canvas.style.pointerEvents = 'auto';
+        this.editorBlock.appendChild(canvas);
+        return canvas;
+    }
+
+    private createEditorLoadingBlock(): HTMLElement {
+        const editorLoadingBlock = document.createElement('div');
+        editorLoadingBlock.style.display = "flex";
+        editorLoadingBlock.classList.add('editor-position');
+        editorLoadingBlock.id = 'editor-loading';
+        editorLoadingBlock.style.zIndex = "1000";
+        editorLoadingBlock.style.pointerEvents = "none";
+
+        const loadingText = document.createElement('div');
+        loadingText.id = 'loading-text';
+        loadingText.style.display = "none";
+        loadingText.style.textAlign = "center";
+        loadingText.style.position = "absolute";
+        loadingText.style.top = "50%";
+        loadingText.style.left = "50%";
+        loadingText.style.transform = "translate(-50%, -50%)";
+        editorLoadingBlock.appendChild(loadingText);
+
+        const spinner = document.createElement('div');
+        spinner.id = 'spinner';
+        spinner.style.display = "none";
+        editorLoadingBlock.appendChild(spinner);
+
+        this.editorBlock.appendChild(editorLoadingBlock);
+        return editorLoadingBlock;
+    }
+
+    async updateMockup(): Promise<void> {
+        console.debug(`[mockup] update for ${this._selectType} ${this._selectSide} ${this._selectColor.name}`);
+
+        this.emit(EditorEventType.MOCKUP_LOADING, true);
+
+        try {
+            // Поиск URL mockup
+            const mockupImageUrl = this.findMockupUrl();
+            if (!mockupImageUrl) {
+                throw new Error('[mockup] Не найден mockup для текущих параметров');
+            }
+
+            // Загрузка и преобразование изображения
+            const dataURL = await this.loadAndConvertImage(mockupImageUrl);
+
+            // Обновление UI
+            this.emit(EditorEventType.MOCKUP_UPDATED, dataURL);
+            this.mockupBlock.src = dataURL;
+
+            console.debug('[mockup] Mockup успешно обновлен');
+        } catch (error) {
+            console.error('[mockup] Ошибка обновления mockup:', error);
+            throw error;
+        } finally {
+            this.emit(EditorEventType.MOCKUP_LOADING, false);
+        }
+    }
+
+    // Поиск URL mockup по текущим параметрам
+    private findMockupUrl(): string | null {
+        const product = this.productConfigs.find(p => p.type === this._selectType);
+        if (!product) return null;
+
+        const mockup = product.mockups.find(
+            m => m.side === this._selectSide && m.color.name === this._selectColor.name
+        );
+        return mockup?.url || null;
+    }
+
+    // Загрузка и конвертация изображения в DataURL
+    private loadAndConvertImage(imageUrl: string): Promise<string> {
+        return new Promise((resolve, reject) => {
+            const image = new Image();
+            image.setAttribute('crossOrigin', 'anonymous');
+
+            image.onload = () => {
+                try {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = image.width;
+                    canvas.height = image.height;
+
+                    const ctx = canvas.getContext('2d');
+                    if (!ctx) {
+                        reject(new Error('Не удалось получить контекст canvas'));
+                        return;
+                    }
+
+                    ctx.drawImage(image, 0, 0);
+                    const dataURL = canvas.toDataURL('image/png');
+                    resolve(dataURL);
+                } catch (error) {
+                    reject(error);
+                }
+            };
+
+            image.onerror = () => {
+                reject(new Error(`Ошибка загрузки изображения: ${imageUrl}`));
+            };
+
+            image.src = imageUrl;
+        });
+    }
+
+    async saveState(): Promise<void> {
+        console.debug('[state] Сохранение состояния редактора');
+        try {
+            const editorState: EditorState = {
+                date: new Date().toISOString(),
+                type: this._selectType,
+                color: this._selectColor.name,
+                side: this._selectSide,
+                size: this._selectSize
+            };
+            console.debug(`[state] Сохраняем: type=${editorState.type}, color=${editorState.color}, side=${editorState.side}, size=${editorState.size}`);
+            await this.storageManager.saveEditorState(editorState);
+            console.debug('[state] Состояние успешно сохранено');
+        } catch (error) {
+            console.error('[state] Ошибка сохранения состояния:', error);
+        }
+    }
+
+    async saveLayouts(): Promise<void> {
+        console.debug('[layers] Сохранение слоёв');
+        try {
+            await this.storageManager.saveLayers(this.layouts);
+            console.debug('[layers] Слои успешно сохранены');
+        } catch (error) {
+            console.error('[layers] Ошибка сохранения слоёв:', error);
+        }
+    }
+
+    async loadLayouts(): Promise<void> {
+        console.debug('[layers] Загрузка слоёв');
+        try {
+            const savedLayouts = await this.storageManager.loadLayers();
+            if (savedLayouts && Array.isArray(savedLayouts)) {
+                this.layouts = savedLayouts.map((layoutData: any) =>
+                    new Layout(layoutData as LayoutProps)
+                );
+                console.debug(`[layers] Загружено ${this.layouts.length} слоёв`);
+            } else {
+                this.layouts = [];
+                console.debug('[layers] Нет сохранённых слоёв');
+            }
+
+            // Всегда сохраняем начальное состояние в историю (даже если пусто)
+            this.saveLayersToHistory();
+        } catch (error) {
+            console.error('[layers] Ошибка загрузки слоёв:', error);
+            this.layouts = [];
+            // Сохраняем пустое состояние в историю
+            this.saveLayersToHistory();
+        }
+    }
+
+    async loadState(): Promise<void> {
+        console.debug('[state] Загрузка состояния редактора');
+
+        try {
+            const editorState = await this.storageManager.loadEditorState();
+
+            if (!editorState) {
+                console.debug('[state] Сохраненное состояние не найдено');
+                await this.updateMockup();
+                // Инициализация UI с дефолтными значениями
+                this.loadProduct();
+                this.initColorsList();
+                this.initSizesList();
+                this.showLayoutList();
+                this.updateLayouts();
+                this.updateSum();
+                return;
+            }
+
+            // Проверка актуальности состояния
+            if (this.isStateExpired(editorState.date)) {
+                console.warn('[state] Состояние устарело, очищаем');
+                await this.storageManager.clearEditorState();
+                await this.updateMockup();
+                // Инициализация UI с дефолтными значениями
+                this.loadProduct();
+                this.initColorsList();
+                this.initSizesList();
+                this.showLayoutList();
+                this.updateLayouts();
+                this.updateSum();
+                return;
+            }
+
+            // Применение сохраненного состояния
+            const applied = await this.applyState(editorState);
+
+            if (applied) {
+                console.debug('[state] Состояние успешно загружено');
+
+                // Обновляем UI с восстановленным состоянием (БЕЗ saveState)
+                await this.updateMockup();
+                this.loadProduct();
+
+                // Обновление визуального отображения выбранного продукта
+                if (this.productBlocks.length > 0) {
+                    this.productBlocks.forEach(block => {
+                        block.style.background = 'rgb(222 222 222)';
+                    });
+                    const activeBlock = this.productBlocks.find(block =>
+                        block.classList.contains('editor-settings__product-block__' + this._selectType)
+                    );
+                    if (activeBlock) {
+                        activeBlock.style.background = '';
+                    }
+                }
+
+                // Загрузка слоёв отдельно
+                await this.loadLayouts();
+
+                // Инициализация UI после загрузки состояния
+                this.initColorsList();
+                this.initSizesList();
+                this.showLayoutList();
+                this.updateLayouts();
+                this.updateSum();
+            } else {
+                console.warn('[state] Не удалось применить сохраненное состояние');
+
+                // Инициализация с дефолтными значениями
+                await this.updateMockup();
+                this.loadProduct();
+                this.initColorsList();
+                this.initSizesList();
+                this.showLayoutList();
+                this.updateLayouts();
+                this.updateSum();
+            }
+        } catch (error) {
+            console.error('[state] Ошибка загрузки состояния:', error);
+            await this.updateMockup();
+            this.loadProduct();
+            this.initColorsList();
+            this.initSizesList();
+            this.showLayoutList();
+            this.updateLayouts();
+            this.updateSum();
+        }
+    }
+
+    // Проверка актуальности состояния
+    private isStateExpired(dateString: string): boolean {
+        const stateDate = new Date(dateString);
+        const expirationDate = Date.now() - (CONSTANTS.STATE_EXPIRATION_DAYS * 24 * 60 * 60 * 1000);
+        return stateDate.getTime() < expirationDate;
+    }
+
+    // Применение сохраненного состояния
+    private async applyState(editorState: any): Promise<boolean> {
+        try {
+            // Валидация обязательных полей
+            if (!editorState.type || !editorState.color || !editorState.side) {
+                console.warn('[state] Некорректное состояние: отсутствуют обязательные поля');
+                return false;
+            }
+
+            console.debug(`[state] Восстановление состояния: type=${editorState.type}, color=${editorState.color}, side=${editorState.side}, size=${editorState.size}`);
+
+            // Поиск продукта
+            const product = this.productConfigs.find(p => p.type === editorState.type);
+            if (!product) {
+                console.warn(`[state] Продукт типа ${editorState.type} не найден`);
+                return false;
+            }
+
+            // Поиск mockup с нужным цветом
+            const mockup = product.mockups.find(m => m.color.name === editorState.color);
+            if (!mockup) {
+                console.warn(`[state] Mockup с цветом ${editorState.color} не найден для продукта ${editorState.type}`);
+                return false;
+            }
+
+            // Применение состояния
+            this._selectType = editorState.type as Product['type'];
+            this._selectColor = mockup.color;
+            this._selectSide = editorState.side as SideEnum;
+            this._selectSize = editorState.size as Size || this._selectSize;
+
+            console.debug(`[state] Состояние применено: type=${this._selectType}, color=${this._selectColor.name}, side=${this._selectSide}, size=${this._selectSize}`);
+
+            // Слои загружаются отдельно через loadLayouts
+            return true;
+        } catch (error) {
+            console.error('[state] Ошибка применения состояния:', error);
+            return false;
+        }
+    }
+
+
+    // Методы для управления состоянием (без сохранения истории)
+    setType(type: Product['type']): void {
+        if (this._selectType !== type) {
+            this._selectType = type;
+            this.emit(EditorEventType.STATE_CHANGED, undefined);
+            this.saveState().catch(err => console.error('[state] Ошибка сохранения:', err));
+        }
+    }
+
+    setColor(color: Color): void {
+        if (this._selectColor !== color) {
+            this._selectColor = color;
+            this.emit(EditorEventType.STATE_CHANGED, undefined);
+            this.saveState().catch(err => console.error('[state] Ошибка сохранения:', err));
+        }
+    }
+
+    setSide(side: SideEnum): void {
+        if (this._selectSide !== side) {
+            this._selectSide = side;
+            this.emit(EditorEventType.STATE_CHANGED, undefined);
+            this.saveState().catch(err => console.error('[state] Ошибка сохранения:', err));
+        }
+    }
+
+    setSize(size: Size): void {
+        if (this._selectSize !== size) {
+            this._selectSize = size;
+            this.emit(EditorEventType.STATE_CHANGED, undefined);
+            this.saveState().catch(err => console.error('[state] Ошибка сохранения:', err));
+        }
+    }
+
+    // Управление layouts (с сохранением истории)
+    addLayout(layout: Layout): void {
+        if (this.isRestoringFromHistory) {
+            // При восстановлении из истории не создаем новую запись
+            this.layouts.push(layout);
+        } else {
+            this.layouts.push(layout);
+            this.saveLayersToHistory();
+        }
+
+        this.emit(EditorEventType.LAYOUT_ADDED, layout);
+        this.updateLayouts();
+        this.showLayoutList();
+        this.saveLayouts().catch(err => console.error('[layers] Ошибка сохранения слоёв:', err));
+    }
+
+    removeLayout(layoutId: Layout['id']): boolean {
+        const index = this.layouts.findIndex(l => l.id === layoutId);
+        if (index !== -1) {
+            const layout = this.layouts[index];
+            if (layout) {
+                this.layouts.splice(index, 1);
+
+                if (!this.isRestoringFromHistory) {
+                    this.saveLayersToHistory();
+                }
+
+                this.emit(EditorEventType.LAYOUT_REMOVED, layoutId);
+                this.updateLayouts();
+                this.saveLayouts().catch(err => console.error('[layers] Ошибка сохранения слоёв:', err));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    updateLayout(layoutId: Layout['id'], updates: Partial<Layout>): boolean {
+        const layout = this.layouts.find(l => l.id === layoutId);
+        if (layout) {
+            Object.assign(layout, updates);
+
+            if (!this.isRestoringFromHistory) {
+                // Сохраняем историю только при изменении картинки или названия
+                if ('url' in updates || 'name' in updates) {
+                    this.saveLayersToHistory();
+                }
+            }
+
+            this.emit(EditorEventType.LAYOUT_UPDATED, layout);
+            this.saveLayouts().catch(err => console.error('[layers] Ошибка сохранения слоёв:', err));
+            return true;
+        }
+        return false;
+    }
+
+    getLayout(layoutId: Layout['id']): Layout | undefined {
+        return this.layouts.find(l => l.id === layoutId);
+    }
+
+    // Геттеры для коллекций
+    getLayouts(): readonly Layout[] {
+        return this.layouts;
+    }
+
+    // ===========================================
+    // Методы работы с UI
+    // ===========================================
+
+    private initHistoryUndoBlock(): void {
+        console.debug('[history block] init undo');
+        this.editorHistoryUndoBlock.style.cursor = 'pointer';
+        this.editorHistoryUndoBlock.onclick = async () => {
+            console.debug('[history undo block] clicked');
+            await this.undo();
+        };
+        this.updateHistoryButtonsState();
+    }
+
+    private initHistoryRedoBlock(): void {
+        console.debug('[history redo block] init redo');
+        this.editorHistoryRedoBlock.style.cursor = 'pointer';
+        this.editorHistoryRedoBlock.onclick = async () => {
+            console.debug('[history redo block] clicked');
+            await this.redo();
+        };
+        this.updateHistoryButtonsState();
+    }
+
+    private initProductList(): void {
+        if (!this.productListBlock || !this.productItemBlock) return;
+
+        console.debug('[ProductList] init product list');
+        this.productItemBlock.style.display = 'none';
+
+        this.productConfigs.forEach(product => {
+            const productItem = this.productItemBlock!.cloneNode(true) as HTMLElement;
+            productItem.style.display = 'table';
+
+            const productImageWrapper = productItem.querySelector('.product-item-image') as HTMLElement;
+            if (productImageWrapper) {
+                const productImage = getLastChild(productImageWrapper);
+                if (productImage) {
+                    productImage.style.backgroundImage = `url(${product.mockups[0]?.url})`;
+                    productImage.style.backgroundSize = 'cover';
+                    productImage.style.backgroundPosition = 'center';
+                    productImage.style.backgroundRepeat = 'no-repeat';
+                }
+            }
+
+            const productTextWrapper = productItem.querySelector('.product-item-text') as HTMLElement;
+            if (productTextWrapper) {
+                const productText = getLastChild(productTextWrapper);
+                if (productText) {
+                    productText.innerText = product.productName;
+                }
+            }
+
+            const productBlock = productItem.firstElementChild as HTMLElement;
+            productBlock.classList.add('editor-settings__product-block__' + product.type);
+            productBlock.style.cursor = 'pointer';
+            productBlock.style.borderColor = 'transparent';
+
+            productItem.onclick = () => this.changeProduct(product.type);
+            this.productBlocks.push(productBlock);
+            this.productListBlock!.firstElementChild!.appendChild(productItem);
+        });
+
+        // Только обновляем UI выбранного продукта, БЕЗ вызова полного changeProduct
+        // (который вызывает saveState и перезаписывает состояние до его восстановления)
+        if (this.productBlocks.length > 0) {
+            this.productBlocks.forEach(block => {
+                block.style.background = 'rgb(222 222 222)';
+            });
+            const activeBlock = this.productBlocks.find(block =>
+                block.classList.contains('editor-settings__product-block__' + this._selectType)
+            );
+            if (activeBlock) {
+                activeBlock.style.background = '';
+            }
+        }
+    }
+
+    initColorsList(): void {
+        if (!this.editorColorsListBlock || !this.editorColorItemBlock) return;
+
+        console.debug(`[settings] init colors for ${this._selectType}`);
+        const product = this.productConfigs.find(p => p.type === this._selectType);
+        if (!product) return;
+
+        this.editorColorItemBlock.style.display = 'none';
+        const colorsContainer = this.editorColorsListBlock.firstElementChild!;
+        colorsContainer.innerHTML = '';
+        this.colorBlocks = [];
+
+        const colors = product.mockups
+            .filter(mockup => mockup.side === this._selectSide)
+            .map(mockup => mockup.color);
+
+        colors.forEach(color => {
+            const colorItem = this.editorColorItemBlock!.cloneNode(true) as HTMLElement;
+            colorItem.style.display = 'table';
+
+            const colorBlock = colorItem.firstElementChild as HTMLElement;
+            colorBlock.classList.add('editor-settings__color-block__' + color.name);
+            colorBlock.style.cursor = 'pointer';
+            colorBlock.style.backgroundColor = color.hex;
+            colorBlock.style.borderColor = 'transparent';
+
+            colorItem.onclick = () => this.changeColor(color.name);
+            this.colorBlocks.push(colorBlock);
+            this.editorColorsListBlock!.firstElementChild!.appendChild(colorItem);
+        });
+
+        // Обновляем UI для отображения текущего цвета (без вызова changeColor, который вызывает saveState)
+        if (this.colorBlocks.length > 0) {
+            this.colorBlocks.forEach(block => {
+                block.style.borderColor = '#f3f3f3';
+            });
+            const activeBlock = this.colorBlocks.find(block =>
+                block.classList.contains('editor-settings__color-block__' + this._selectColor.name)
+            );
+            if (activeBlock) {
+                activeBlock.style.borderColor = '';
+            }
+        }
+    }
+
+    initSizesList(): void {
+        if (!this.editorSizesListBlock || !this.editorSizeItemBlock) return;
+
+        console.debug(`[settings] init sizes for ${this._selectType}`);
+        const product = this.productConfigs.find(p => p.type === this._selectType);
+        if (!product || !product.sizes) return;
+
+        this.editorSizeItemBlock.style.display = 'none';
+        const sizesContainer = this.editorSizesListBlock.firstElementChild!;
+        sizesContainer.innerHTML = '';
+        this.sizeBlocks = [];
+
+        product.sizes.forEach(size => {
+            const sizeItem = this.editorSizeItemBlock!.cloneNode(true) as HTMLElement;
+            sizeItem.style.display = 'table';
+            sizeItem.style.cursor = 'pointer';
+            sizeItem.style.userSelect = 'none';
+            sizeItem.classList.add('editor-settings__size-block__' + size);
+
+            const borderBlock = sizeItem.firstElementChild as HTMLElement;
+            borderBlock.style.borderColor = '#f3f3f3';
+
+            const sizeText = getLastChild(sizeItem);
+            if (sizeText) {
+                sizeText.innerText = size;
+            }
+
+            sizeItem.onclick = () => this.changeSize(size);
+            this.sizeBlocks.push(sizeItem);
+            this.editorSizesListBlock!.firstElementChild!.appendChild(sizeItem);
+        });
+
+        // Обновляем UI для отображения текущего размера (без вызова changeSize, который вызывает saveState)
+        if (this.sizeBlocks.length > 0) {
+            this.sizeBlocks.forEach(block => {
+                const borderBlock = block.firstElementChild as HTMLElement;
+                if (borderBlock) {
+                    borderBlock.style.borderColor = '#f3f3f3';
+                }
+            });
+
+            const activeBlock = this.sizeBlocks.find(block =>
+                block.classList.contains('editor-settings__size-block__' + this._selectSize)
+            );
+            if (activeBlock) {
+                const borderBlock = activeBlock.firstElementChild as HTMLElement;
+                if (borderBlock) {
+                    borderBlock.style.borderColor = '';
+                }
+            }
+        }
+    }
+
+    showLayoutList(): void {
+        console.debug('[settings] [layouts] show layouts list');
+
+        if (!this.editorLayoutItemBlock) {
+            console.error("[settings] [layouts] editorLayoutItemBlock is not initialized");
+            return;
+        }
+
+        if (!this.editorLayoutsListBlock) {
+            console.error("[settings] [layouts] editorLayoutsListBlock is not initialized");
+            return;
+        }
+
+        this.editorLayoutItemBlock.style.display = 'none';
+        this.editorLayoutsListBlock.firstElementChild!.innerHTML = '';
+
+        console.debug(`[settings] [layouts] layouts list block children: ${this.editorLayoutsListBlock.firstElementChild!.children.length}`);
+
+        // const layoutsToShow = this.layouts.filter(layout => layout.view === this._selectSide);
+        // console.debug(`[settings] [layouts] layouts to show: ${layoutsToShow.length}`);
+
+        this.layouts.forEach(layout => {
+            const layoutItem = this.editorLayoutItemBlock!.cloneNode(true) as HTMLElement;
+            layoutItem.style.display = 'table';
+
+            // Подсвечиваем редактируемый слой
+            const isEditing = this._selectLayout === layout.id;
+
+            const previewBlock = this.editorLayoutItemBlockViewClass
+                ? layoutItem.querySelector(this.editorLayoutItemBlockViewClass) as HTMLElement
+                : null;
+            const nameBlock = this.editorLayoutItemBlockNameClass
+                ? layoutItem.querySelector(this.editorLayoutItemBlockNameClass) as HTMLElement
+                : null;
+            const removeBlock = this.editorLayoutItemBlockRemoveClass
+                ? layoutItem.querySelector(this.editorLayoutItemBlockRemoveClass) as HTMLElement
+                : null;
+            const editBlock = this.editorLayoutItemBlockEditClass
+                ? layoutItem.querySelector(this.editorLayoutItemBlockEditClass) as HTMLElement
+                : null;
+
+            if (previewBlock) {
+                if (layout.isImageLayout()) {
+                    const previewElement = previewBlock.firstElementChild as HTMLElement;
+                    if (previewElement) {
+                        previewElement.style.backgroundImage = `url(${layout.url})`;
+                        previewElement.style.backgroundSize = 'contain';
+                        previewElement.style.backgroundPosition = 'center';
+                        previewElement.style.backgroundRepeat = 'no-repeat';
+                    }
+
+                    if (isEditing) {
+                        previewElement.style.borderColor = 'rgb(254, 94, 58)';
+                    } else {
+                        previewElement.style.borderColor = '';
+                    }
+                } else if (layout.type === 'text') {
+                    // Можно добавить специальную обработку для текстовых слоёв
+                }
+            }
+
+            if (nameBlock) {
+                const nameElement = nameBlock.firstElementChild as HTMLElement;
+                if (nameElement) {
+                    if (layout.type === 'image') {
+                        const displayName = !layout.name
+                            ? "Изображение"
+                            : layout.name.includes("\n")
+                                ? layout.name.split("\n")[0] + "..."
+                                : layout.name.length > 40
+                                    ? layout.name.slice(0, 40) + "..."
+                                    : layout.name;
+                        nameElement.innerText = displayName;
+                    } else if (layout.type === 'text') {
+                        nameElement.innerText = layout.name || "Текст";
+                    }
+                }
+            }
+
+            if (removeBlock) {
+                removeBlock.style.cursor = 'pointer';
+                removeBlock.onclick = () => {
+                    this.removeLayout(layout.id);
+                    this.showLayoutList();
+                    this.updateSum();
+                    if (isEditing) this.cancelEditLayout();
+                };
+
+                // Восстанавливаем иконку из data-original атрибута (для Tilda)
+                this.restoreIconFromDataOriginal(removeBlock.firstElementChild as HTMLElement);
+            }
+
+            if (editBlock) {
+                if (isEditing) {
+                    editBlock.style.display = 'none';
+                } else {
+                    editBlock.style.display = 'block';
+                }
+                editBlock.style.cursor = 'pointer';
+                editBlock.onclick = () => this.editLayout(layout);
+
+                // Восстанавливаем иконку из data-original атрибута (для Tilda)
+                this.restoreIconFromDataOriginal(getLastChild(editBlock));
+            }
+
+            this.editorLayoutsListBlock!.firstElementChild!.appendChild(layoutItem);
+        });
+
+        console.debug(`[settings] [layouts] layouts shown: ${this.editorLayoutsListBlock.firstElementChild!.children.length}`);
+    }
+
+    private initAddOrderButton(): void {
+        if (!this.editorAddOrderButton) return;
+
+        this.editorAddOrderButton.style.cursor = 'pointer';
+        this.editorAddOrderButton.onclick = async () => {
+            if (this.getSum() === 0) {
+                alert('Для добавления заказа продукт не может быть пустым');
+                return;
+            }
+
+            try {
+                console.debug('[order] Начало создания заказа');
+
+                // Экспортируем дизайн со всех сторон
+                const exportedArt = await this.exportArt();
+                console.debug('[order] Экспорт дизайна завершен:', Object.keys(exportedArt));
+
+                // Преобразуем в формат для отправки
+                const sides = Object.keys(exportedArt).map(side => ({
+                    image_url: exportedArt[side] || '',
+                }));
+
+                // Загружаем изображения на сервер
+                console.debug('[order] Загрузка изображений на сервер...');
+                for (const side of sides) {
+                    const base64 = side.image_url.split(',')[1]!;
+                    side.image_url = await this.uploadImageToServer(base64);
+                }
+                console.debug('[order] Изображения загружены на сервер');
+
+                // Создаем продукт и добавляем в корзину
+                const productName = `${this.capitalizeFirstLetter(this.getProductName())} с вашим ${Object.keys(exportedArt).length == 1 ? 'односторонним' : 'двухсторонним'} принтом`;
+
+                createProduct({
+                    quantity: this.getQuantity(),
+                    name: productName,
+                    size: this._selectSize,
+                    color: this._selectColor,
+                    sides,
+                    productType: this._selectType,
+                });
+
+                console.debug('[order] Заказ успешно создан');
+            } catch (error) {
+                console.error('[order] Ошибка создания заказа:', error);
+                alert('Ошибка при создании заказа');
+            }
+        };
+    }
+
+    private initUploadImageButton(): void {
+        if (!this.editorUploadImageButton) return;
+
+        this.resetUserUploadImage();
+
+        this.editorUploadImageButton.style.cursor = 'pointer';
+        this.editorUploadImageButton.addEventListener('click', () => {
+            this.uploadUserImage();
+        });
+    }
+
+    private initFixQuantityForm(): void {
+        if (!this.quantityFormBlock) return;
+
+        const form = this.quantityFormBlock.querySelector('form');
+        const input = form?.querySelector('input[name="quantity"]') as HTMLInputElement;
+
+        if (!input) return;
+
+        setInterval(() => {
+            const quantity = this.getQuantity();
+            input.value = quantity < 1 ? '1' : quantity.toString();
+        }, 50);
+    }
+
+    private async initForm(): Promise<void> {
+        if (!this.formBlock || !this.formButton || !this.formInputVariableName) return;
+
+        const formBlock = this.formBlock;
+        const formInputVariableName = this.formInputVariableName;
+        const formButton = this.formButton;
+
+        const handleClick = async () => {
+            console.debug('[form] [button] clicked');
+
+            const formInput = formBlock.querySelector(`[name="${formInputVariableName}"]`) as HTMLInputElement | HTMLTextAreaElement;
+            const prompt = formInput.value;
+
+            // Валидация
+            if (this.loadedUserImage && this.editorLoadWithAi) {
+                if (!prompt || prompt.trim() === "" || prompt.length < 3) {
+                    console.warn('[form] [input] prompt is empty or too short');
+                    alert("Минимальная длина запроса 3 символа");
+                    return;
+                }
+            } else if (!this.loadedUserImage) {
+                if (!prompt || prompt.trim() === "" || prompt.length < 3) {
+                    console.warn('[form] [input] prompt is empty or too short');
+                    alert("Минимальная длина запроса 3 символа");
+                    return;
+                }
+            }
+
+            console.debug(`[form] [input] prompt: ${prompt}`);
+
+            this.emit(EditorEventType.MOCKUP_LOADING, true);
+
+            const layoutId = this._selectLayout || Layout.generateId();
+
+            try {
+                const url = await generateImage(
+                    prompt,
+                    this._selectColor.name,
+                    this.loadedUserImage || undefined,
+                    this.editorLoadWithAi,
+                    layoutId
+                );
+
+                this.emit(EditorEventType.MOCKUP_LOADING, false);
+
+                const imageData = await this.getImageData(url);
+                console.debug(`[form] [input] image data received`);
+
+                if (this._selectLayout) {
+                    // Режим редактирования существующего layout
+                    const layout = this.layouts.find(layout => layout.id === layoutId);
+
+                    if (layout && layout.isImageLayout()) {
+                        console.debug(`[form] [input] updating layout: ${layout.id}`);
+
+                        layout.name = prompt;
+                        layout.url = imageData;
+
+                        console.debug(`[form] [input] layout updated`);
+
+                        this.showLayoutList();
+                        this.updateLayouts();
+                        this.saveState();
+                    }
+                } else {
+                    // Режим создания нового layout
+                    this.addLayout(Layout.createImage({
+                        id: layoutId,
+                        view: this._selectSide,
+                        url: imageData,
+                        name: prompt
+                    }));
+                }
+
+                // Очищаем форму и режим редактирования
+                formInput.value = "";
+
+                // Убираем подсветку с textarea
+                formInput.style.border = '';
+                formInput.style.outline = '';
+                formInput.style.boxShadow = '';
+
+                this._selectLayout = null;
+
+                if (this.loadedUserImage) {
+                    this.resetUserUploadImage();
+                }
+
+                // Обновляем список слоёв для удаления подсветки
+                this.showLayoutList();
+            } catch (error) {
+                this.emit(EditorEventType.MOCKUP_LOADING, false);
+                console.error('[form] [input] error', error);
+                alert("Ошибка при генерации изображения");
+                return;
+            } finally {
+                if (this.loadedUserImage) {
+                    this.resetUserUploadImage();
+                }
+
+                // Всегда сбрасываем режим редактирования
+                if (this._selectLayout) {
+                    this._selectLayout = null;
+                    this.cancelEditLayout();
+                }
+            }
+        };
+
+        // Ждём появления формы (для Tilda)
+        const form = await new Promise<HTMLFormElement | null>((resolve) => {
+            const interval = setInterval(() => {
+                const form = formBlock.querySelector("form") as HTMLFormElement;
+                if (form) {
+                    clearInterval(interval);
+                    resolve(form);
+                }
+            }, 100);
+
+            setTimeout(() => {
+                clearInterval(interval);
+                resolve(null);
+            }, 1000 * 10);
+        });
+
+        if (!form) {
+            console.warn('[form] form not found');
+            return;
+        }
+
+        // Настройка формы
+        form.action = "";
+        form.method = "GET";
+        form.onsubmit = (event) => {
+            event.preventDefault();
+            handleClick();
+        };
+
+        // Стилизация textarea
+        const fixInputBlock = form.querySelector(`textarea[name='${formInputVariableName}']`) as HTMLElement;
+        if (fixInputBlock) {
+            fixInputBlock.style.padding = "8px";
+        }
+
+        // Настройка кнопки
+        formButton.onclick = handleClick;
+        formButton.style.cursor = "pointer";
+
+        console.debug('[form] Инициализация формы завершена');
+    }
+
+    // ===========================================
+    // Вспомогательные методы UI
+    // ===========================================
+
+    private restoreIconFromDataOriginal(element: HTMLElement | null): void {
+        if (!element) return;
+
+        const dataOriginal = element.attributes.getNamedItem("data-original")?.value;
+        if (dataOriginal) {
+            element.style.backgroundImage = `url("${dataOriginal}")`;
+        }
+    }
+
+    changeProduct(productType: Product['type']): void {
+        this._selectType = productType;
+
+        // Проверяем, существует ли текущий цвет для нового продукта
+        const product = this.productConfigs.find(p => p.type === productType);
+        if (product) {
+            const mockupWithCurrentColor = product.mockups.find(
+                m => m.side === this._selectSide && m.color.name === this._selectColor.name
+            );
+
+            // Если текущий цвет не существует для нового продукта, берем первый доступный цвет
+            if (!mockupWithCurrentColor) {
+                const firstMockup = product.mockups.find(m => m.side === this._selectSide);
+                if (firstMockup) {
+                    this._selectColor = firstMockup.color;
+                    console.debug(`[product] Цвет изменен на ${this._selectColor.name} для продукта ${productType}`);
+                }
+            }
+        }
+
+        if (this.productBlocks.length > 0) {
+            this.productBlocks.forEach(block => {
+                block.style.background = 'rgb(222 222 222)';
+            });
+            const activeBlock = this.productBlocks.find(block =>
+                block.classList.contains('editor-settings__product-block__' + this._selectType)
+            );
+            if (activeBlock) {
+                activeBlock.style.background = '';
+            }
+        }
+
+        this.updateMockup();
+        this.loadProduct();
+        this.showLayoutList();
+        this.updateLayouts();
+        this.updateSum();
+        this.saveState();
+    }
+
+    changeSide(): void {
+        const newSide: SideEnum = this._selectSide === 'front' ? 'back' : 'front';
+        this.setActiveSide(newSide);
+        this.updateMockup();
+        this.showLayoutList();
+        this.updateLayouts();
+        this.saveState();
+        this.emit(EditorEventType.STATE_CHANGED, undefined);
+    }
+
+    changeColor(colorName: string): void {
+        const product = this.productConfigs.find(p => p.type === this._selectType);
+        if (!product) return;
+
+        const mockup = product.mockups.find(m => m.color.name === colorName);
+        if (!mockup) return;
+
+        this._selectColor = mockup.color;
+
+        if (this.colorBlocks.length > 0) {
+            this.colorBlocks.forEach(block => {
+                block.style.borderColor = '#f3f3f3';
+            });
+            const activeBlock = this.colorBlocks.find(block =>
+                block.classList.contains('editor-settings__color-block__' + colorName)
+            );
+            if (activeBlock) {
+                activeBlock.style.borderColor = '';
+            }
+        }
+
+        this.updateMockup();
+        this.saveState();
+    }
+
+    changeSize(size: Size): void {
+        if (this.sizeBlocks.length > 0) {
+            this.sizeBlocks.forEach(block => {
+                const borderBlock = block.firstElementChild as HTMLElement;
+                if (borderBlock) {
+                    borderBlock.style.borderColor = '#f3f3f3';
+                }
+            });
+
+            const activeBlock = this.sizeBlocks.find(block =>
+                block.classList.contains('editor-settings__size-block__' + size)
+            );
+            if (activeBlock) {
+                const borderBlock = activeBlock.firstElementChild as HTMLElement;
+                if (borderBlock) {
+                    borderBlock.style.borderColor = '';
+                }
+            }
+        }
+
+        this._selectSize = size;
+        this.saveState();
+    }
+
+    editLayout(layout: Layout): void {
+        console.debug(`[settings] [layouts] edit layout ${layout.id}`);
+        this._selectLayout = layout.id;
+
+        if (this.formBlock && this.formInputVariableName) {
+            // Ищем input или textarea
+            const formInput = this.formBlock.querySelector(`[name="${this.formInputVariableName}"]`) as HTMLInputElement | HTMLTextAreaElement;
+            if (formInput) {
+                formInput.value = layout.name || '';
+
+                // Подсвечиваем textarea при редактировании
+                formInput.style.borderColor = 'rgb(254, 94, 58)';
+
+                // Фокусируемся на поле
+                formInput.focus();
+
+                console.debug(`[settings] [layouts] Установлено значение в форму: "${layout.name}"`);
+            } else {
+                console.warn(`[settings] [layouts] Не найден элемент формы с именем "${this.formInputVariableName}"`);
+            }
+        }
+
+        if (layout.isImageLayout()) {
+            this.loadedUserImage = layout.url;
+            this.setUserUploadImage(layout.url);
+            // Инициализируем кнопки ИИ для редактирования
+            this.initAiButtons();
+            this.hideAiButtons();
+        } else {
+            this.loadedUserImage = null;
+            this.resetUserUploadImage();
+        }
+
+        // Обновляем список слоёв для отображения подсветки
+        this.showLayoutList();
+    }
+
+    cancelEditLayout(): void {
+        console.debug(`[settings] [layouts] cancel edit layout`);
+
+        // Сбрасываем выбранный layout
+        this._selectLayout = null;
+
+        // Очищаем форму и сбрасываем подсветку
+        if (this.formBlock && this.formInputVariableName) {
+            const formInput = this.formBlock.querySelector(`[name="${this.formInputVariableName}"]`) as HTMLInputElement | HTMLTextAreaElement;
+            if (formInput) {
+                formInput.value = '';
+                formInput.style.borderColor = '#f3f3f3';
+            }
+        }
+
+        // Сбрасываем загруженное изображение
+        this.loadedUserImage = null;
+        this.editorLoadWithAi = false;
+        this.resetUserUploadImage();
+
+        // Обновляем список слоёв для удаления подсветки
+        this.showLayoutList();
+
+        console.debug(`[settings] [layouts] Редактирование отменено`);
+    }
+
+    private initAiButtons(): void {
+        // Устанавливаем начальное состояние
+        this.editorLoadWithAi = false;
+        this.changeLoadWithAi();
+
+        // Инициализируем кнопку "С ИИ"
+        if (this.editorLoadWithAiButton) {
+            this.editorLoadWithAiButton.style.display = 'block';
+            this.editorLoadWithAiButton.style.cursor = 'pointer';
+            this.editorLoadWithAiButton.onclick = () => {
+                this.changeLoadWithAi(true);
+            };
+        }
+
+        // Инициализируем кнопку "Без ИИ"
+        if (this.editorLoadWithoutAiButton) {
+            this.editorLoadWithoutAiButton.style.display = 'block';
+            this.editorLoadWithoutAiButton.style.cursor = 'pointer';
+            this.editorLoadWithoutAiButton.onclick = () => {
+                this.changeLoadWithAi(false);
+            };
+        }
+    }
+
+    private hideAiButtons(): void {
+        this.editorLoadWithAi = true;
+
+        if (this.editorLoadWithAiButton) {
+            (this.editorLoadWithAiButton.parentElement?.parentElement?.parentElement as HTMLElement).style.display = 'none';
+        }
+
+    }
+
+    uploadUserImage(): void {
+        console.debug('[upload user image] starting user image upload');
+
+        // Инициализируем кнопки ИИ
+        this.initAiButtons();
+
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = 'image/*';
+        fileInput.style.display = 'none';
+
+        fileInput.onchange = (event: Event) => {
+            const target = event.target as HTMLInputElement;
+            const file = target.files?.[0];
+
+            if (file) {
+                console.debug('[upload user image] file selected:', file.name);
+
+                if (!file.type.startsWith('image/')) {
+                    console.warn('[upload user image] selected file is not an image');
+                    alert('Пожалуйста, выберите файл изображения');
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    const imageUrl = e.target?.result as string;
+                    console.debug('[upload user image] file loaded as data URL');
+
+                    const imageData = await this.getImageData(imageUrl);
+                    this.setUserUploadImage(imageData);
+
+                    console.debug('[upload user image] image layout added successfully');
+                };
+
+                reader.onerror = () => {
+                    console.error('[upload user image] error reading file');
+                    alert('Ошибка при загрузке файла');
+                };
+
+                reader.readAsDataURL(file);
+            }
+        };
+
+        document.body.appendChild(fileInput);
+        fileInput.click();
+        document.body.removeChild(fileInput);
+    }
+
+    setUserUploadImage(image: string): void {
+        this.loadedUserImage = image;
+
+        if (this.editorUploadViewBlock) {
+            this.editorUploadViewBlock.style.display = 'block';
+            const imageBlock = getLastChild(this.editorUploadViewBlock);
+            if (imageBlock) {
+                imageBlock.style.backgroundImage = `url(${image})`;
+                imageBlock.style.backgroundSize = 'contain';
+                imageBlock.style.backgroundPosition = 'center';
+                imageBlock.style.backgroundRepeat = 'no-repeat';
+            }
+        }
+    }
+
+    resetUserUploadImage(): void {
+        if (this.editorUploadViewBlock) {
+            this.editorUploadViewBlock.style.display = 'none';
+        }
+
+        if (this.editorUploadCancelButton) {
+            this.editorUploadCancelButton.style.cursor = 'pointer';
+            this.editorUploadCancelButton.onclick = () => {
+                console.debug('[upload image button] cancel button clicked');
+                // Полностью отменяем редактирование
+                this.cancelEditLayout();
+            };
+        }
+    }
+
+    changeLoadWithAi(value: boolean = false): void {
+        this.editorLoadWithAi = value;
+
+        if (this.editorLoadWithAiButton && this.editorLoadWithoutAiButton) {
+            const buttonWithAi = this.editorLoadWithAiButton;
+            const buttonWithoutAi = this.editorLoadWithoutAiButton;
+
+            if (value) {
+                const fixButtonWithAi = getLastChild(buttonWithAi);
+                const fixButtonWithoutAi = getLastChild(buttonWithoutAi);
+                if (fixButtonWithAi) {
+                    fixButtonWithAi.style.borderColor = '';
+                }
+                if (fixButtonWithoutAi) {
+                    fixButtonWithoutAi.style.borderColor = '#f2f2f2';
+                }
+            } else {
+                const fixButtonWithAi = getLastChild(buttonWithAi);
+                const fixButtonWithoutAi = getLastChild(buttonWithoutAi);
+                if (fixButtonWithAi) {
+                    fixButtonWithAi.style.borderColor = '#f2f2f2';
+                }
+                if (fixButtonWithoutAi) {
+                    fixButtonWithoutAi.style.borderColor = '';
+                }
+            }
+        }
+    }
+
+
+    private loadImage(src: string): Promise<HTMLImageElement> {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => resolve(img);
+            img.onerror = reject;
+            img.src = src;
+        });
+    }
+
+    getQuantity(): number {
+        if (!this.quantityFormBlock) return 1;
+
+        const form = this.quantityFormBlock.querySelector('form');
+        const input = form?.querySelector('input[name="quantity"]') as HTMLInputElement;
+
+        if (!input) return 1;
+        return parseInt(input.value) || 1;
+    }
+
+    getSum(): number {
+        const hasFront = this.layouts.some(layout => layout.view === 'front');
+        const hasBack = this.layouts.some(layout => layout.view === 'back');
+
+        if (hasBack && hasFront) {
+            return 1920 + 500;
+        }
+        if (hasBack || hasFront) {
+            return 1920;
+        }
+        return 0;
+    }
+
+    updateSum(): void {
+        if (!this.editorSumBlock) return;
+
+        const sum = this.getSum();
+        const sumText = getLastChild(this.editorSumBlock);
+        if (sumText) {
+            sumText.innerText = sum.toString() + ' ₽';
+        }
+
+        // Update button style based on sum
+        if (this.editorAddOrderButton) {
+            const buttonBlock = getLastChild(this.editorAddOrderButton);
+            if (buttonBlock) {
+                buttonBlock.style.backgroundColor = sum === 0 ? 'rgb(121 121 121)' : '';
+            }
+        }
+    }
+
+    // ===========================================
+    // Методы работы с Canvas (Fabric.js)
+    // ===========================================
+
+    loadProduct(): void {
+        const product = this.productConfigs.find(p => p.type === this._selectType);
+        if (!product || !product.printConfig) {
+            console.warn('[product] product or printConfig not found');
+            return;
+        }
+
+        this.clearAllCanvas();
+
+        for (const printConfig of product.printConfig) {
+            this.createCanvasForSide(printConfig);
+        }
+
+        this.setActiveSide(this._selectSide);
+
+        setTimeout(() => {
+            this.isLoading = false;
+            this.emit(EditorEventType.MOCKUP_LOADING, false);
+        }, 100);
+    }
+
+    private clearAllCanvas(): void {
+        if (this.canvasesContainer) {
+            this.canvasesContainer.innerHTML = '';
+        }
+
+        this.canvases.forEach(canvas => {
+            try {
+                canvas.dispose();
+            } catch (err) {
+                console.error('[canvas] Ошибка очистки canvas:', err);
+            }
+        });
+
+        this.canvases = [];
+        this.layersCanvases = [];
+        this.activeCanvas = null;
+    }
+
+    private createCanvasForSide(printConfig: any): void {
+        if (!this.canvasesContainer) {
+            console.error('[canvas] canvasesContainer не инициализирован');
+            return;
+        }
+
+        // Создание статического canvas для слоев
+        const layersCanvasBlock = document.createElement('canvas');
+        layersCanvasBlock.id = 'layers--' + printConfig.side;
+        layersCanvasBlock.classList.add('editor-position');
+        layersCanvasBlock.setAttribute('ref', printConfig.side);
+        layersCanvasBlock.style.zIndex = '7';
+
+        this.canvasesContainer.appendChild(layersCanvasBlock);
+
+        const layersCanvas = new fabric.StaticCanvas(layersCanvasBlock, {
+            width: this.editorBlock.clientWidth,
+            height: this.editorBlock.clientHeight,
+        });
+        (layersCanvas as any).side = printConfig.side;
+        (layersCanvas as any).name = 'static-' + printConfig.side;
+
+        // Создание редактируемого canvas
+        const editableCanvasBlock = document.createElement('canvas');
+        editableCanvasBlock.id = 'editable--' + printConfig.side;
+        editableCanvasBlock.setAttribute('ref', printConfig.side);
+        editableCanvasBlock.classList.add('editor-position');
+        editableCanvasBlock.style.zIndex = '9';
+
+        this.canvasesContainer.appendChild(editableCanvasBlock);
+
+        const editableCanvas = new fabric.Canvas(editableCanvasBlock, {
+            controlsAboveOverlay: true,
+            width: this.editorBlock.clientWidth,
+            height: this.editorBlock.clientHeight,
+            backgroundColor: 'transparent',
+            uniformScaling: true
+        });
+        (editableCanvas as any).side = printConfig.side;
+        (editableCanvas as any).name = 'editable-' + printConfig.side;
+
+        this.layersCanvases.push(layersCanvas);
+        this.canvases.push(editableCanvas);
+
+        if (this.canvases.length === 1) {
+            this.activeCanvas = editableCanvas;
+        }
+
+        this.initMainCanvas(editableCanvas, printConfig);
+    }
+
+    private initMainCanvas(canvas: fabric.Canvas, printConfig: any): void {
+        if (!canvas || !(canvas instanceof fabric.Canvas)) {
+            console.warn('[canvas] canvas не валиден');
+            return;
+        }
+
+        const width = printConfig.size.width / 600 * this.editorBlock.clientWidth;
+        const height = printConfig.size.height / 600 * this.editorBlock.clientHeight;
+        const left = (this.editorBlock.clientWidth - width) / 2 + (printConfig.position.x / 100 * this.editorBlock.clientWidth);
+        const top = (this.editorBlock.clientHeight - height) / 2 + (printConfig.position.y / 100 * this.editorBlock.clientHeight);
+
+        // Создание области обрезки
+        const clipArea = new fabric.Rect({
+            width,
+            height,
+            left,
+            top,
+            fill: 'rgb(255, 0, 0)',
+            name: 'area:clip',
+            evented: false,
+        } as any);
+
+        // Создание границы области
+        const areaBorder = new fabric.Rect({
+            width: width - 3,
+            height: height - 3,
+            left,
+            top,
+            fill: 'rgba(0,0,0,0)',
+            strokeWidth: 3,
+            stroke: 'rgb(254, 94, 58)',
+            name: 'area:border',
+            opacity: 0.3,
+            evented: false,
+            selectable: false,
+            hasControls: false,
+            strokeDashArray: [5, 5],
+        } as any);
+
+        canvas.add(areaBorder);
+        canvas.clipPath = clipArea;
+
+        // Обработчики событий canvas
+        this.setupCanvasEventHandlers(canvas, printConfig);
+    }
+
+    private setupCanvasEventHandlers(canvas: fabric.Canvas, printConfig: any): void {
+        // Mouse down - показать границу
+        canvas.on('mouse:down', () => {
+            const border = this.getObject('area:border', canvas);
+            if (border) {
+                border.set('opacity', 0.8);
+                canvas.requestRenderAll();
+            }
+        });
+
+        // Mouse up - скрыть границу
+        canvas.on('mouse:up', () => {
+            const border = this.getObject('area:border', canvas);
+            if (border) {
+                border.set('opacity', 0.3);
+                canvas.requestRenderAll();
+            }
+        });
+
+        // Вращение с привязкой к углам
+        canvas.on('object:rotating', (e) => {
+            if (e.target?.angle !== undefined) {
+                const angles = [0, 90, 180, 270];
+                const currentAngle = e.target.angle % 360;
+                for (const snapAngle of angles) {
+                    if (Math.abs(currentAngle - snapAngle) < 5) {
+                        e.target.rotate(snapAngle);
+                    }
+                }
+            }
+        });
+
+        // Перемещение с направляющими
+        canvas.on('object:moving', (e) => {
+            this.handleObjectMoving(e, canvas, printConfig);
+        });
+
+        // Изменение объекта
+        canvas.on('object:modified', (e) => {
+            this.handleObjectModified(e, canvas, printConfig);
+        });
+    }
+
+    private handleObjectMoving(e: fabric.IEvent, canvas: fabric.Canvas, printConfig: any): void {
+        if (!e.target || e.target.name === 'area:border' || e.target.name === 'area:clip') {
+            return;
+        }
+
+        const layout = this.layouts.find(l => l.id === e.target!.name);
+        if (!layout) return;
+
+        const width = printConfig.size.width / 600 * this.editorBlock.clientWidth;
+        const height = printConfig.size.height / 600 * this.editorBlock.clientHeight;
+        const left = Math.round((this.editorBlock.clientWidth - width) / 2 + (printConfig.position.x / 100 * this.editorBlock.clientWidth));
+        const top = Math.round((this.editorBlock.clientHeight - height) / 2 + (printConfig.position.y / 100 * this.editorBlock.clientHeight));
+
+        const objWidth = e.target.width! * e.target.scaleX!;
+        const objHeight = e.target.height! * e.target.scaleY!;
+        const objCenterLeft = e.target.left! + objWidth / 2;
+        const objCenterTop = e.target.top! + objHeight / 2;
+
+        const nearX = Math.abs(objCenterLeft - (left + width / 2)) < 7;
+        const nearY = Math.abs(objCenterTop - (top + height / 2)) < 7;
+
+        // Вертикальная направляющая
+        if (nearX) {
+            this.showGuideline(canvas, 'vertical', left + width / 2, 0, left + width / 2, this.editorBlock.clientHeight);
+            e.target.set({ left: left + width / 2 - objWidth / 2 });
+        } else {
+            this.hideGuideline(canvas, 'vertical');
+        }
+
+        // Горизонтальная направляющая
+        if (nearY) {
+            this.showGuideline(canvas, 'horizontal', 0, top + height / 2, this.editorBlock.clientWidth, top + height / 2);
+            e.target.set({ top: top + height / 2 - objHeight / 2 });
+        } else {
+            this.hideGuideline(canvas, 'horizontal');
+        }
+    }
+
+    private handleObjectModified(e: fabric.IEvent, canvas: fabric.Canvas, printConfig: any): void {
+        const object = e.target;
+        if (!object) return;
+
+        // Удаляем направляющие
+        this.hideGuideline(canvas, 'vertical');
+        this.hideGuideline(canvas, 'horizontal');
+
+        const layout = this.layouts.find(l => l.id === object.name);
+        if (!layout) return;
+
+        const width = printConfig.size.width / 600 * this.editorBlock.clientWidth;
+        const height = printConfig.size.height / 600 * this.editorBlock.clientHeight;
+        const left = Math.round((this.editorBlock.clientWidth - width) / 2 + (printConfig.position.x / 100 * this.editorBlock.clientWidth));
+        const top = Math.round((this.editorBlock.clientHeight - height) / 2 + (printConfig.position.y / 100 * this.editorBlock.clientHeight));
+
+        // Обновляем layout
+        layout.position.x = (object.left! - left) / width;
+        layout.position.y = (object.top! - top) / height;
+        layout.size = object.scaleX!;
+        layout.aspectRatio = object.scaleY! / object.scaleX!;
+        layout.angle = object.angle!;
+
+        // Сохраняем позиции слоёв в storage (но не добавляем в историю undo/redo)
+        // Перемещение и трансформация объектов на canvas не должны создавать историю
+        this.saveLayouts().catch(err => console.error('[layers] Ошибка сохранения слоёв:', err));
+    }
+
+    private showGuideline(canvas: fabric.Canvas, type: 'vertical' | 'horizontal', x1: number, y1: number, x2: number, y2: number): void {
+        const name = `guideline:${type}`;
+        let guideline = this.getObject(name, canvas);
+
+        if (!guideline) {
+            guideline = new fabric.Line([x1, y1, x2, y2], {
+                stroke: 'rgb(254, 94, 58)',
+                strokeWidth: 2,
+                strokeDashArray: [5, 5],
+                selectable: false,
+                evented: false,
+                name,
+            } as any);
+            if (guideline) {
+                canvas.add(guideline);
+            }
+        }
+    }
+
+    private hideGuideline(canvas: fabric.Canvas, type: 'vertical' | 'horizontal'): void {
+        const guideline = this.getObject(`guideline:${type}`, canvas);
+        if (guideline) {
+            canvas.remove(guideline);
+        }
+    }
+
+    private getObject(name: string, canvas?: fabric.Canvas): fabric.Object | undefined {
+        const targetCanvas = canvas || this.activeCanvas || this.canvases[0];
+        if (!targetCanvas) return undefined;
+
+        return targetCanvas.getObjects().find(obj => (obj as any).name === name);
+    }
+
+    setActiveSide(side: SideEnum): void {
+        console.debug('[canvas] Установка активной стороны:', side);
+
+        this.canvases.forEach(canvas => {
+            const canvasElement = canvas.getElement();
+            const containerElement = canvasElement.parentElement;
+
+            if ((canvas as any).side === side) {
+                this.activeCanvas = canvas;
+                if (containerElement) {
+                    containerElement.style.pointerEvents = 'auto';
+                    containerElement.style.display = 'block';
+                }
+                canvasElement.style.display = 'block';
+            } else {
+                if (containerElement) {
+                    containerElement.style.pointerEvents = 'none';
+                    containerElement.style.display = 'none';
+                }
+                canvasElement.style.display = 'none';
+            }
+        });
+
+        this.layersCanvases.forEach(layersCanvas => {
+            const canvasElement = layersCanvas.getElement();
+            canvasElement.style.display = (layersCanvas as any).side === side ? 'block' : 'none';
+        });
+
+        this._selectSide = side;
+    }
+
+    async addLayoutToCanvas(layout: Layout): Promise<void> {
+        const canvas = this.canvases.find(c => (c as any).side === layout.view);
+        if (!canvas) {
+            console.warn(`[canvas] canvas для ${layout.view} не найден`);
+            return;
+        }
+
+        const product = this.productConfigs.find(p => p.type === this._selectType);
+        if (!product) return;
+
+        const printConfig = product.printConfig.find(pc => pc.side === layout.view);
+        if (!printConfig) return;
+
+        const width = printConfig.size.width / 600 * this.editorBlock.clientWidth;
+        const height = printConfig.size.height / 600 * this.editorBlock.clientHeight;
+        const left = Math.round((this.editorBlock.clientWidth - width) / 2 + (printConfig.position.x / 100 * this.editorBlock.clientWidth));
+        const top = Math.round((this.editorBlock.clientHeight - height) / 2 + (printConfig.position.y / 100 * this.editorBlock.clientHeight));
+
+        const absoluteLeft = left + (width * layout.position.x);
+        const absoluteTop = top + (height * layout.position.y);
+
+        if (layout.isImageLayout()) {
+            const image = new fabric.Image(await this.loadImage(layout.url));
+
+            if (layout.size === 1 && image.width! > width) {
+                layout.size = width / image.width!;
+            }
+
+            image.set({
+                left: absoluteLeft,
+                top: absoluteTop,
+                name: layout.id,
+                scaleX: layout.size,
+                scaleY: layout.size * layout.aspectRatio,
+                angle: layout.angle,
+            } as any);
+            canvas.add(image);
+        } else if (layout.isTextLayout()) {
+            const text = new fabric.Text(layout.text, {
+                fontFamily: layout.font.family,
+                fontSize: layout.font.size,
+            });
+            text.set({
+                top: absoluteTop,
+                left: absoluteLeft,
+                name: layout.id,
+                scaleX: layout.size,
+                scaleY: layout.size * layout.aspectRatio,
+                angle: layout.angle,
+            } as any);
+            canvas.add(text);
+        }
+    }
+
+    updateLayouts(): void {
+        if (!this.activeCanvas) return;
+
+        const objects = this.activeCanvas.getObjects();
+
+        // Удаляем объекты, которых больше нет в layouts
+        const objectsToRemove = objects
+            .filter(obj => (obj as any).name !== 'area:border' && (obj as any).name !== 'area:clip' && !(obj as any).name?.startsWith('guideline'))
+            .filter(obj => !this.layouts.find(layout => layout.id === (obj as any).name));
+
+        objectsToRemove.forEach(obj => {
+            this.activeCanvas?.remove(obj);
+        });
+
+        // Добавляем новые объекты
+        const layoutsForCurrentSide = this.layouts.filter(layout => layout.view === this._selectSide);
+        const objectsToAdd = layoutsForCurrentSide.filter(layout => !objects.find(obj => (obj as any).name === layout.id));
+
+        objectsToAdd.forEach(layout => {
+            this.addLayoutToCanvas(layout);
+        });
+
+        this.activeCanvas.renderAll();
+    }
+
+    // ===========================================
+    // Методы загрузки изображений
+    // ===========================================
+
+    async preloadAllMockups(): Promise<void> {
+        console.debug('[preload] Начало предзагрузки mockups');
+
+        for (const product of this.productConfigs) {
+            for (const mockup of product.mockups) {
+                try {
+                    const mockupDataUrl = await this.getImageData(mockup.url);
+                    mockup.url = mockupDataUrl;
+                    console.debug(`[preload] Mockup загружен: ${mockup.color.name}`);
+                } catch (error) {
+                    console.error(`[preload] Ошибка загрузки mockup ${mockup.url}:`, error);
+                }
+            }
+        }
+
+        console.debug('[preload] Предзагрузка завершена');
+    }
+
+    private async getImageData(url: string): Promise<string> {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+
+            img.onload = () => {
+                try {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+
+                    const ctx = canvas.getContext('2d');
+                    if (!ctx) {
+                        reject(new Error('Не удалось получить контекст canvas'));
+                        return;
+                    }
+
+                    ctx.drawImage(img, 0, 0);
+                    const dataUrl = canvas.toDataURL('image/png');
+                    resolve(dataUrl);
+                } catch (error) {
+                    reject(error);
+                }
+            };
+
+            img.onerror = () => reject(new Error(`Не удалось загрузить изображение: ${url}`));
+            img.src = url;
+        });
+    }
+
+    async uploadImage(file: File): Promise<string> {
+        console.debug('[upload] Загрузка файла:', file.name);
+
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+
+            reader.onload = async (e) => {
+                try {
+                    const dataUrl = e.target?.result as string;
+
+                    // Конвертируем в нужный формат через canvas
+                    const convertedDataUrl = await this.getImageData(dataUrl);
+
+                    console.debug('[upload] Файл успешно загружен');
+                    resolve(convertedDataUrl);
+                } catch (error) {
+                    console.error('[upload] Ошибка обработки файла:', error);
+                    reject(error);
+                }
+            };
+
+            reader.onerror = () => {
+                console.error('[upload] Ошибка чтения файла');
+                reject(new Error('Не удалось прочитать файл'));
+            };
+
+            reader.readAsDataURL(file);
+        });
+    }
+
+    async uploadImageToServer(base64: string): Promise<string> {
+        console.debug('[upload] Загрузка изображения на сервер');
+
+        const userId = await this.storageManager.getUserId();
+
+        const response = await fetch('https://1804633-image.fl.gridesk.ru/upload', {
+            method: 'POST',
+            body: JSON.stringify({ image: base64, user_id: userId }),
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        });
+
+        const data = await response.json();
+        console.debug('[upload] Изображение загружено на сервер:', data.image_url);
+        return data.image_url;
+    }
+
+    getProductName(): string {
+        return this.productConfigs.find(product => product.type === this._selectType)?.productName || '';
+    }
+
+    capitalizeFirstLetter(string: string): string {
+        return string.charAt(0).toUpperCase() + string.slice(1);
+    }
+
+    getMockupUrl(side: SideEnum): string | null {
+        const mockup = this.productConfigs
+            .find(product => product.type === this._selectType)?.mockups
+            .find(mockup => mockup.side === side && mockup.color.name === this._selectColor.name);
+
+        return mockup ? mockup.url : null;
+    }
+
+    // ===========================================
+    // Методы экспорта
+    // ===========================================
+
+    async exportArt(): Promise<{ [side: string]: string }> {
+        const result: { [side: string]: string } = {};
+
+        // Получаем все стороны, для которых есть хотя бы один слой
+        const allSidesWithLayers = [...new Set(this.layouts.map(layout => layout.view))];
+
+        // Сортируем так, чтобы front был первым, если он есть
+        const sidesWithLayers = allSidesWithLayers.sort((a, b) => {
+            if (a === 'front') return -1;  // front в начало
+            if (b === 'front') return 1;   // front в начало
+            return 0;  // остальные в исходном порядке
+        });
+
+        console.debug('[export] Найдены стороны с слоями:', sidesWithLayers, '(front первый)');
+
+        for (const side of sidesWithLayers) {
+            try {
+                // Находим canvas'ы для этой стороны
+                const editableCanvas = this.canvases.find(c => (c as any).side === side);
+                const layersCanvas = this.layersCanvases.find(c => (c as any).side === side);
+
+                if (!editableCanvas) {
+                    console.warn(`[export] Canvas для стороны ${side} не найден`);
+                    continue;
+                }
+
+                console.debug(`[export] Экспортируем сторону ${side} с мокапом...`);
+
+                // Загружаем мокап для текущей стороны и цвета
+                const mockupUrl = this.getMockupUrl(side as SideEnum);
+                if (!mockupUrl) {
+                    console.warn(`[export] Мокап для стороны ${side} не найден`);
+                    continue;
+                }
+
+                const mockupImg = await this.loadImage(mockupUrl);
+                console.debug(`[export] Загружен мокап для ${side}: ${mockupUrl}`);
+
+                // Создаем временный canvas фиксированного размера 2048x2048 (высокое качество)
+                const exportSize = 1024;
+                const tempCanvas = document.createElement('canvas');
+                const ctx = tempCanvas.getContext('2d')!;
+
+                tempCanvas.width = exportSize;
+                tempCanvas.height = exportSize;
+
+                // Вычисляем масштаб для мокапа (вписываем в квадрат 1024x1024)
+                const mockupScale = Math.min(exportSize / mockupImg.width, exportSize / mockupImg.height);
+                const scaledMockupWidth = mockupImg.width * mockupScale;
+                const scaledMockupHeight = mockupImg.height * mockupScale;
+                const mockupX = (exportSize - scaledMockupWidth) / 2;
+                const mockupY = (exportSize - scaledMockupHeight) / 2;
+
+                // Рисуем мокап как фон (центрируем)
+                ctx.drawImage(mockupImg, mockupX, mockupY, scaledMockupWidth, scaledMockupHeight);
+                console.debug(`[export] Нарисован мокап как фон для ${side} (${scaledMockupWidth}x${scaledMockupHeight})`);
+
+                // Множитель для увеличения качества (максимальное качество)
+                const qualityMultiplier = 10;
+
+                // Вычисляем масштаб для наложения дизайна
+                const baseWidth = (editableCanvas as any).getWidth();
+                const baseHeight = (editableCanvas as any).getHeight();
+                const scaleX = scaledMockupWidth / baseWidth;
+                const scaleY = scaledMockupHeight / baseHeight;
+
+                // Создаем временный canvas для объединения всех слоёв дизайна (увеличенного размера)
+                const designCanvas = document.createElement('canvas');
+                const designCtx = designCanvas.getContext('2d')!;
+                designCanvas.width = baseWidth * qualityMultiplier;
+                designCanvas.height = baseHeight * qualityMultiplier;
+
+                // Добавляем статические слои
+                if (layersCanvas) {
+                    try {
+                        const layersDataUrl = (layersCanvas as any).toDataURL({
+                            format: 'png',
+                            multiplier: 10,  // Максимальное качество экспорта
+                            quality: 1.0
+                        });
+
+                        const emptyDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+                        if (layersDataUrl !== emptyDataUrl && layersDataUrl.length > emptyDataUrl.length) {
+                            const layersImg = await this.loadImage(layersDataUrl);
+                            designCtx.drawImage(layersImg, 0, 0, designCanvas.width, designCanvas.height);
+                            console.debug(`[export] Добавлены статические слои для ${side}`);
+                        }
+                    } catch (error) {
+                        console.warn(`[export] Ошибка экспорта статических слоев для ${side}:`, error);
+                    }
+                }
+
+                // Добавляем редактируемые объекты БЕЗ границ и служебных элементов
+                try {
+                    const tempEditableCanvas = new fabric.StaticCanvas(null, {
+                        width: baseWidth,
+                        height: baseHeight,
+                        backgroundColor: 'transparent'
+                    });
+
+                    // Применяем clipPath если он существует
+                    if ((editableCanvas as any).clipPath) {
+                        const clonedClip = await new Promise<any>((resolve) => {
+                            (editableCanvas as any).clipPath!.clone((cloned: any) => resolve(cloned));
+                        });
+                        tempEditableCanvas.clipPath = clonedClip;
+                        console.debug(`[export] Применён clipPath для экспорта стороны ${side}`);
+                    }
+
+                    // Копируем все объекты кроме служебных
+                    const allObjects = (editableCanvas as any).getObjects();
+                    const designObjects = allObjects.filter((obj: any) => {
+                        const objName = obj.name;
+                        return objName !== "area:border" &&
+                            objName !== "area:clip" &&
+                            objName !== "guideline" &&
+                            objName !== "guideline:vertical" &&
+                            objName !== "guideline:horizontal";
+                    });
+
+                    for (const obj of designObjects) {
+                        const clonedObj = await new Promise<any>((resolve) => {
+                            obj.clone((cloned: any) => resolve(cloned));
+                        });
+                        tempEditableCanvas.add(clonedObj);
+                    }
+
+                    const designDataUrl = tempEditableCanvas.toDataURL({
+                        format: 'png',
+                        multiplier: 10,  // Максимальное качество экспорта
+                        quality: 1.0
+                    });
+
+                    const emptyDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+                    if (designDataUrl !== emptyDataUrl && designDataUrl.length > emptyDataUrl.length) {
+                        const designImg = await this.loadImage(designDataUrl);
+                        designCtx.drawImage(designImg, 0, 0, designCanvas.width, designCanvas.height);
+                        console.debug(`[export] Добавлены объекты дизайна без границ для ${side}`);
+                    }
+
+                    // Очищаем временный canvas
+                    tempEditableCanvas.dispose();
+                } catch (error) {
+                    console.warn(`[export] Ошибка создания дизайна без границ для ${side}:`, error);
+                }
+
+                // Накладываем объединенный дизайн поверх мокапа с правильным масштабом и позицией
+                // designCanvas увеличен в qualityMultiplier раз, поэтому рисуем с указанием целевого размера
+                ctx.drawImage(
+                    designCanvas,
+                    0, 0, designCanvas.width, designCanvas.height,  // Исходный размер
+                    mockupX, mockupY, scaledMockupWidth, scaledMockupHeight  // Целевой размер
+                );
+
+                console.debug(`[export] Наложен дизайн на мокап для ${side}`);
+
+                result[side] = tempCanvas.toDataURL('image/png', 1.0);
+                console.debug(`[export] Сторона ${side} успешно экспортирована`);
+            } catch (error) {
+                console.error(`[export] Ошибка при экспорте стороны ${side}:`, error);
+            }
+        }
+
+        console.debug('[export] Экспорт завершен, стороны:', Object.keys(result));
+        return result;
+    }
+
+    private async uploadDesignToServer(designs: { [key: string]: string }): Promise<{ [key: string]: string } | null> {
+        try {
+            console.debug('[export] Загрузка дизайна на сервер');
+
+            const formData = new FormData();
+
+            for (const [side, dataUrl] of Object.entries(designs)) {
+                // Конвертируем dataUrl в Blob
+                const response = await fetch(dataUrl);
+                const blob = await response.blob();
+                formData.append(side, blob, `${side}.png`);
+            }
+
+            // TODO: Реализовать реальную загрузку на сервер
+            // const response = await fetch('/api/upload-design', {
+            //     method: 'POST',
+            //     body: formData
+            // });
+            // const result = await response.json();
+            // return result.urls;
+
+            console.warn('[export] Загрузка на сервер не реализована');
+            return designs;
+        } catch (error) {
+            console.error('[export] Ошибка при загрузке на сервер:', error);
+            return null;
+        }
+    }
+
+    // ===========================================
+    // История слоёв (Undo/Redo)
+    // ===========================================
+
+    private saveLayersToHistory(): void {
+        // Удаляем все состояния после текущего индекса (при новом действии после undo)
+        if (this.currentHistoryIndex < this.layersHistory.length - 1) {
+            this.layersHistory = this.layersHistory.slice(0, this.currentHistoryIndex + 1);
+        }
+
+        // Создаем глубокую копию текущих слоёв
+        const layersCopy = JSON.parse(JSON.stringify(this.layouts));
+        const historyItem: LayersHistoryItem = {
+            layers: layersCopy.map((data: any) => new Layout(data as LayoutProps)),
+            timestamp: Date.now()
+        };
+
+        this.layersHistory.push(historyItem);
+        this.currentHistoryIndex = this.layersHistory.length - 1;
+
+        // Ограничиваем размер истории (например, последние 50 состояний)
+        const MAX_HISTORY_SIZE = 50;
+        if (this.layersHistory.length > MAX_HISTORY_SIZE) {
+            this.layersHistory.shift();
+            this.currentHistoryIndex--;
+        }
+
+        console.debug(`[history] Сохранено состояние слоёв. Индекс: ${this.currentHistoryIndex}, Всего: ${this.layersHistory.length}, Слоёв: ${this.layouts.length}`);
+        this.updateHistoryButtonsState();
+    }
+
+    private canUndo(): boolean {
+        // Можем сделать undo если:
+        // 1. Есть минимум 2 элемента в истории (текущее + предыдущее)
+        // 2. И мы либо на последнем элементе, либо уже откатились и можем откатиться дальше
+        if (this.currentHistoryIndex === this.layersHistory.length - 1) {
+            // Если на последнем элементе, проверяем, есть ли куда откатываться
+            return this.layersHistory.length >= 2;
+        } else {
+            // Если уже откатились, проверяем, можем ли откатиться ещё
+            return this.currentHistoryIndex > 0;
+        }
+    }
+
+    private canRedo(): boolean {
+        return this.currentHistoryIndex < this.layersHistory.length - 1;
+    }
+
+    updateHistoryButtonsState(): void {
+        const canUndo = this.canUndo();
+        const canRedo = this.canRedo();
+
+        if (this.editorHistoryUndoBlock && this.editorHistoryUndoBlock.firstElementChild) {
+            const undoButton = this.editorHistoryUndoBlock.firstElementChild as HTMLElement;
+            if (canUndo) {
+                undoButton.style.backgroundColor = '';
+                undoButton.style.cursor = 'pointer';
+            } else {
+                undoButton.style.backgroundColor = '#f2f2f2';
+                undoButton.style.cursor = 'default';
+            }
+        }
+
+        if (this.editorHistoryRedoBlock && this.editorHistoryRedoBlock.firstElementChild) {
+            const redoButton = this.editorHistoryRedoBlock.firstElementChild as HTMLElement;
+            if (canRedo) {
+                redoButton.style.backgroundColor = '';
+                redoButton.style.cursor = 'pointer';
+            } else {
+                redoButton.style.backgroundColor = '#f2f2f2';
+                redoButton.style.cursor = 'default';
+            }
+        }
+
+        console.debug('[history] Состояние кнопок: undo =', canUndo, ', redo =', canRedo);
+    }
+
+    async undo(): Promise<boolean> {
+        if (!this.canUndo()) {
+            console.debug('[history] Undo невозможен');
+            return false;
+        }
+
+        // Если мы на последнем элементе (текущее состояние), нужно перейти к предпоследнему
+        // Последний элемент в истории - это текущее состояние, поэтому при первом undo
+        // мы переходим к предпоследнему элементу
+        if (this.currentHistoryIndex === this.layersHistory.length - 1 && this.layersHistory.length >= 2) {
+            // Переходим на предпоследний элемент
+            this.currentHistoryIndex = this.layersHistory.length - 2;
+        } else {
+            // В остальных случаях просто декрементируем индекс
+            this.currentHistoryIndex = Math.max(0, this.currentHistoryIndex - 1);
+        }
+
+        const historyItem = this.layersHistory[this.currentHistoryIndex];
+
+        if (!historyItem) {
+            console.warn('[history] История не найдена');
+            return false;
+        }
+
+        console.debug(`[history] Undo к индексу ${this.currentHistoryIndex} из ${this.layersHistory.length - 1}`);
+        await this.restoreLayersFromHistory(historyItem);
+        this.updateHistoryButtonsState();
+        return true;
+    }
+
+    async redo(): Promise<boolean> {
+        if (!this.canRedo()) {
+            console.debug('[history] Redo невозможен');
+            return false;
+        }
+
+        this.currentHistoryIndex++;
+        const historyItem = this.layersHistory[this.currentHistoryIndex];
+
+        if (!historyItem) {
+            console.warn('[history] История не найдена');
+            return false;
+        }
+
+        console.debug(`[history] Redo к индексу ${this.currentHistoryIndex} из ${this.layersHistory.length - 1}`);
+        await this.restoreLayersFromHistory(historyItem);
+        this.updateHistoryButtonsState();
+        return true;
+    }
+
+    private async restoreLayersFromHistory(historyItem: LayersHistoryItem): Promise<void> {
+        this.isRestoringFromHistory = true;
+
+        try {
+            // Очищаем текущие слои
+            this.layouts = [];
+
+            // Восстанавливаем слои из истории
+            historyItem.layers.forEach(layout => {
+                this.layouts.push(new Layout(layout as any));
+            });
+
+            // Обновляем UI
+            this.showLayoutList();
+            this.updateLayouts();
+            this.updateSum();
+
+            // Сохраняем состояние
+            await this.saveState();
+
+            console.debug(`[history] Восстановлено ${this.layouts.length} слоёв`);
+        } finally {
+            this.isRestoringFromHistory = false;
+        }
+    }
+
+
+    // ===========================================
+    // Cleanup методы
+    // ===========================================
+
+    destroy(): void {
+        console.debug('[editor] Очистка ресурсов редактора');
+
+        // Остановка таймеров
+        if (this.loadingInterval) {
+            clearInterval(this.loadingInterval);
+            this.loadingInterval = null;
+        }
+
+        // Очистка событий
+        this.events.destroy();
+
+        // Очистка canvas
+        this.canvases.forEach(canvas => {
+            try {
+                canvas.dispose();
+            } catch (err) {
+                console.error('[cleanup] Ошибка очистки canvas:', err);
+            }
+        });
+        this.canvases = [];
+
+        this.layersCanvases.forEach(canvas => {
+            try {
+                canvas.dispose();
+            } catch (err) {
+                console.error('[cleanup] Ошибка очистки layer canvas:', err);
+            }
+        });
+        this.layersCanvases = [];
+
+        // Очистка событий
+        // Note: EventTarget не имеет метода removeAllListeners,
+        // но при уничтожении объекта они будут собраны GC
+
+        console.debug('[editor] Ресурсы успешно очищены');
+    }
+
+    // Получение текущего состояния для экспорта/отладки
+    getCurrentState() {
+        return {
+            type: this._selectType,
+            color: this._selectColor,
+            side: this._selectSide,
+            size: this._selectSize,
+            layouts: this.layouts,
+            isLoading: this.isLoading,
+        };
+    }
+}

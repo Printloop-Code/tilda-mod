@@ -4,10 +4,8 @@
     "description": "TypeScript проект для фронтенда с компиляцией в JavaScript",
     "main": "dist/index.js",
     "scripts": {
-        "build": "tsc",
-        "dev": "webpack serve",
-        "clean": "rimraf dist",
-        "start": "npm run build && node dist/index.js"
+        "build": "webpack build",
+        "dev": "webpack serve"
     },
     "keywords": [
         "typescript",
@@ -20,6 +18,7 @@
         "@types/fabric": "^5.3.0",
         "rimraf": "^5.0.5",
         "typescript": "^5.3.3",
+        "uglifyjs-webpack-plugin": "^2.2.0",
         "webpack-cli": "^6.0.1",
         "webpack-dev-server": "^5.2.2"
     },
