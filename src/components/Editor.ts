@@ -1731,18 +1731,12 @@ export default class Editor {
                     }));
                 }
 
-                // Очищаем форму и режим редактирования
-                formInput.value = "";
 
-                // Убираем подсветку с textarea
                 formInput.style.borderColor = '#f3f3f3';
-
                 this._selectLayout = null;
-
-                if (this.loadedUserImage) {
-                    this.resetUserUploadImage();
-                }
-
+                formInput.value = "";
+                this.cancelEditLayout();
+                this.resetUserUploadImage();
                 // Обновляем список слоёв для удаления подсветки
                 this.showLayoutList();
 
@@ -2004,7 +1998,6 @@ export default class Editor {
         // Сбрасываем загруженное изображение
         this.loadedUserImage = null;
         this.editorLoadWithAi = false;
-        this.resetUserUploadImage();
 
         // Обновляем список слоёв для удаления подсветки
         this.showLayoutList();
@@ -2120,6 +2113,8 @@ export default class Editor {
         if (this.editorUploadViewBlock) {
             this.editorUploadViewBlock.style.display = 'none';
         }
+
+        this.loadedUserImage = null;
 
         if (this.editorUploadCancelButton) {
             this.editorUploadCancelButton.style.cursor = 'pointer';
