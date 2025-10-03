@@ -32,7 +32,7 @@ const CONSTANTS = {
 // URL-адреса API endpoints
 const API_ENDPOINTS = {
     WEBHOOK_CART: 'https://primary-production-654c.up.railway.app/webhook/cart',           // Webhook для добавления в корзину
-    UPLOAD_IMAGE: 'https://1804633-image.fl.gridesk.ru/upload',                            // Загрузка изображений на сервер
+    UPLOAD_IMAGE: 'https://preview-service-production-fd20.up.railway.app',                            // Загрузка изображений на сервер
     WEBHOOK_REQUEST: 'https://primary-production-654c.up.railway.app/webhook/request',     // Webhook для генерации изображений
 } as const;
 
