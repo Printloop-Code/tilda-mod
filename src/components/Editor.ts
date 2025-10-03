@@ -1,151 +1,213 @@
+// ============================================
+// ИМПОРТЫ
+// ============================================
+
+// Импорт типов данных для редактора
 import type { EditorProps, Product, Size, Color, SideEnum, LayoutProps, CreateProductProps, EditorState } from '../types';
+// Менеджер для работы с localStorage (сохранение/загрузка состояния)
 import { EditorStorageManager } from '../managers/EditorStorageManager';
+// Модель для работы со слоями (Layout - это изображение или текст на холсте)
 import { Layout } from '../models/Layout';
+// Утилиты для работы с DOM Tilda
 import { getLastChild } from '../utils/tildaUtils';
+// Система событий (pub/sub паттерн)
 import { TypedEventEmitter } from '../utils/TypedEventEmitter';
+// API функции для генерации изображений и создания заказов
 import { generateImage, createProduct } from '../utils/api';
 
-// Объявление глобальной переменной fabric
+// Объявление глобальной переменной fabric (библиотека для работы с canvas)
 declare const fabric: any;
 
-// Константы
+// ============================================
+// КОНСТАНТЫ
+// ============================================
+
+// Основные константы приложения
 const CONSTANTS = {
-    STATE_EXPIRATION_DAYS: 30,
-    CANVAS_AREA_HEIGHT: 600,
-    LOADING_INTERVAL_MS: 100,
+    STATE_EXPIRATION_DAYS: 30,      // Сколько дней хранить состояние в localStorage
+    CANVAS_AREA_HEIGHT: 600,         // Высота области canvas в пикселях
+    LOADING_INTERVAL_MS: 100,        // Интервал проверки загрузки (мс)
 } as const;
 
-// API endpoints
+// URL-адреса API endpoints
 const API_ENDPOINTS = {
-    WEBHOOK_CART: 'https://primary-production-654c.up.railway.app/webhook/cart',
-    UPLOAD_IMAGE: 'https://1804633-image.fl.gridesk.ru/upload',
-    WEBHOOK_REQUEST: 'https://primary-production-654c.up.railway.app/webhook/request',
+    WEBHOOK_CART: 'https://primary-production-654c.up.railway.app/webhook/cart',           // Webhook для добавления в корзину
+    UPLOAD_IMAGE: 'https://1804633-image.fl.gridesk.ru/upload',                            // Загрузка изображений на сервер
+    WEBHOOK_REQUEST: 'https://primary-production-654c.up.railway.app/webhook/request',     // Webhook для генерации изображений
 } as const;
 
-// Типы событий редактора
+// ============================================
+// ТИПЫ СОБЫТИЙ
+// ============================================
+
+// Перечисление всех возможных событий редактора
 export enum EditorEventType {
-    MOCKUP_LOADING = 'mockup-loading',
-    MOCKUP_UPDATED = 'mockup-updated',
-    LOADING_TIME_UPDATED = 'loading-time-updated',
-    STATE_CHANGED = 'state-changed',
-    LAYOUT_ADDED = 'layout-added',
-    LAYOUT_REMOVED = 'layout-removed',
-    LAYOUT_UPDATED = 'layout-updated',
+    MOCKUP_LOADING = 'mockup-loading',              // Событие: загрузка мокапа (футболки/толстовки)
+    MOCKUP_UPDATED = 'mockup-updated',              // Событие: мокап обновлен
+    LOADING_TIME_UPDATED = 'loading-time-updated',  // Событие: обновление времени загрузки
+    STATE_CHANGED = 'state-changed',                // Событие: изменение состояния редактора
+    LAYOUT_ADDED = 'layout-added',                  // Событие: добавлен новый слой
+    LAYOUT_REMOVED = 'layout-removed',              // Событие: удален слой
+    LAYOUT_UPDATED = 'layout-updated',              // Событие: обновлен слой
 }
 
+// Типы данных для каждого события (что передается в событие)
 export type EditorEventMap = {
-    [EditorEventType.MOCKUP_LOADING]: boolean;
-    [EditorEventType.MOCKUP_UPDATED]: string;
-    [EditorEventType.LOADING_TIME_UPDATED]: number;
-    [EditorEventType.STATE_CHANGED]: void;
-    [EditorEventType.LAYOUT_ADDED]: Layout;
-    [EditorEventType.LAYOUT_REMOVED]: Layout['id'];
-    [EditorEventType.LAYOUT_UPDATED]: Layout;
+    [EditorEventType.MOCKUP_LOADING]: boolean;          // Передается: идет загрузка или нет
+    [EditorEventType.MOCKUP_UPDATED]: string;           // Передается: URL нового мокапа
+    [EditorEventType.LOADING_TIME_UPDATED]: number;     // Передается: время загрузки (секунды)
+    [EditorEventType.STATE_CHANGED]: void;              // Ничего не передается
+    [EditorEventType.LAYOUT_ADDED]: Layout;             // Передается: добавленный слой
+    [EditorEventType.LAYOUT_REMOVED]: Layout['id'];     // Передается: ID удаленного слоя
+    [EditorEventType.LAYOUT_UPDATED]: Layout;           // Передается: обновленный слой
 };
 
-// Интерфейсы для хранения состояния
+// ============================================
+// ИНТЕРФЕЙСЫ
+// ============================================
 
-// Элемент истории слоёв (для undo/redo)
+// Элемент истории слоёв (для функции отмены/повтора действий - undo/redo)
 interface LayersHistoryItem {
-    layers: Layout[];
-    timestamp: number;
+    layers: Layout[];       // Массив слоев на момент сохранения
+    timestamp: number;      // Временная метка (когда было сохранено)
 }
 
+// ============================================
+// КЛАСС EDITOR - ОСНОВНОЙ РЕДАКТОР ДИЗАЙНА
+// ============================================
+/**
+ * Класс Editor управляет всем процессом создания дизайна:
+ * - Отображение canvas с дизайном футболок/толстовок
+ * - Добавление/удаление/редактирование слоев (изображений и текста)
+ * - Управление состоянием (цвет, размер, сторона, тип продукта)
+ * - Генерация изображений через AI
+ * - Сохранение/загрузка состояния из localStorage
+ * - История действий (undo/redo)
+ * - Добавление товара в корзину Tilda
+ */
 export default class Editor {
-    // DOM элементы (readonly после инициализации)
-    private readonly editorBlock: HTMLElement;
-    private readonly changeSideButton: HTMLElement;
-    private readonly canvasesContainer: HTMLElement;
-    private readonly editorLoadingBlock: HTMLElement;
-    private readonly editorHistoryUndoBlock: HTMLElement;
-    private readonly editorHistoryRedoBlock: HTMLElement;
-    private readonly quantityFormBlock: HTMLElement | null = null;
-    private mockupBlock: HTMLImageElement;
+    // ============================================
+    // DOM ЭЛЕМЕНТЫ (readonly после инициализации)
+    // ============================================
+    private readonly editorBlock: HTMLElement;              // Основной контейнер редактора
+    private readonly changeSideButton: HTMLElement;         // Кнопка переключения сторон (перед/зад)
+    private readonly canvasesContainer: HTMLElement;        // Контейнер для всех canvas элементов
+    private readonly editorLoadingBlock: HTMLElement;       // Блок загрузки (спиннер)
+    private readonly editorHistoryUndoBlock: HTMLElement;   // Кнопка "Отменить"
+    private readonly editorHistoryRedoBlock: HTMLElement;   // Кнопка "Повторить"
+    private readonly quantityFormBlock: HTMLElement | null = null;  // Форма с количеством товара
+    private mockupBlock: HTMLImageElement;                  // Элемент <img> с мокапом футболки/толстовки
 
-    // Дополнительные UI элементы из старой реализации
-    private productListBlock?: HTMLElement;
-    private productItemBlock?: HTMLElement;
-    private editorColorsListBlock?: HTMLElement;
-    private editorColorItemBlock?: HTMLElement;
-    private editorSizesListBlock?: HTMLElement;
-    private editorSizeItemBlock?: HTMLElement;
-    private editorLayoutsListBlock?: HTMLElement;
-    private editorLayoutItemBlock?: HTMLElement;
-    private editorUploadImageButton?: HTMLElement;
-    private editorUploadViewBlock?: HTMLElement;
-    private editorUploadCancelButton?: HTMLElement;
-    private editorLoadWithAiButton?: HTMLElement;
-    private editorLoadWithoutAiButton?: HTMLElement;
-    private editorAddOrderButton?: HTMLElement;
-    private editorSumBlock?: HTMLElement;
-    private editorProductName?: HTMLElement;
+    // ============================================
+    // ДОПОЛНИТЕЛЬНЫЕ UI ЭЛЕМЕНТЫ
+    // ============================================
+    private productListBlock?: HTMLElement;             // Список продуктов (футболка/толстовка)
+    private productItemBlock?: HTMLElement;             // Шаблон элемента продукта
+    private editorColorsListBlock?: HTMLElement;        // Список цветов
+    private editorColorItemBlock?: HTMLElement;         // Шаблон элемента цвета
+    private editorSizesListBlock?: HTMLElement;         // Список размеров
+    private editorSizeItemBlock?: HTMLElement;          // Шаблон элемента размера
+    private editorLayoutsListBlock?: HTMLElement;       // Список слоев
+    private editorLayoutItemBlock?: HTMLElement;        // Шаблон элемента слоя
+    private editorUploadImageButton?: HTMLElement;      // Кнопка загрузки изображения
+    private editorUploadViewBlock?: HTMLElement;        // Блок предпросмотра загруженного изображения
+    private editorUploadCancelButton?: HTMLElement;     // Кнопка отмены загрузки
+    private editorLoadWithAiButton?: HTMLElement;       // Кнопка "Загрузить с AI"
+    private editorLoadWithoutAiButton?: HTMLElement;    // Кнопка "Загрузить без AI"
+    private editorAddOrderButton?: HTMLElement;         // Кнопка "Добавить в корзину"
+    private editorSumBlock?: HTMLElement;               // Блок с суммой заказа
+    private editorProductName?: HTMLElement;            // Название продукта
 
-    // CSS классы для динамических элементов
-    private editorLayoutItemBlockViewClass?: string;
-    private editorLayoutItemBlockNameClass?: string;
-    private editorLayoutItemBlockRemoveClass?: string;
-    private editorLayoutItemBlockEditClass?: string;
+    // ============================================
+    // CSS КЛАССЫ ДЛЯ ДИНАМИЧЕСКИХ ЭЛЕМЕНТОВ
+    // ============================================
+    private editorLayoutItemBlockViewClass?: string;    // CSS класс для превью слоя
+    private editorLayoutItemBlockNameClass?: string;    // CSS класс для имени слоя
+    private editorLayoutItemBlockRemoveClass?: string;  // CSS класс для кнопки удаления слоя
+    private editorLayoutItemBlockEditClass?: string;    // CSS класс для кнопки редактирования слоя
 
-    // Форма
-    private formBlock: HTMLElement | null = null;
-    private formInputVariableName: string | null = null;
-    private formButton: HTMLElement | null = null;
+    // ============================================
+    // ФОРМА ГЕНЕРАЦИИ
+    // ============================================
+    private formBlock: HTMLElement | null = null;           // Контейнер формы
+    private formInputVariableName: string | null = null;    // Имя переменной input поля (для Tilda)
+    private formButton: HTMLElement | null = null;          // Кнопка "Сгенерировать"
 
-    // Менеджеры
-    private readonly storageManager: EditorStorageManager;
+    // ============================================
+    // МЕНЕДЖЕРЫ
+    // ============================================
+    private readonly storageManager: EditorStorageManager;  // Менеджер для работы с localStorage
 
-    // Состояние (приватное, доступ через геттеры)
-    private _selectType: Product['type'];
-    private _selectColor: Color;
-    private _selectSide: SideEnum;
-    private _selectSize: Size;
-    private _selectLayout: Layout['id'] | null = null;
+    // ============================================
+    // СОСТОЯНИЕ РЕДАКТОРА (приватное, доступ через геттеры)
+    // ============================================
+    private _selectType: Product['type'];           // Текущий выбранный тип продукта (tshirt/hoodie)
+    private _selectColor: Color;                    // Текущий выбранный цвет
+    private _selectSide: SideEnum;                  // Текущая выбранная сторона (front/back)
+    private _selectSize: Size;                      // Текущий выбранный размер
+    private _selectLayout: Layout['id'] | null = null;  // ID редактируемого слоя (null = режим создания)
 
-    // Данные
-    private readonly productConfigs: Product[];
-    private layouts: Layout[] = [];
+    // ============================================
+    // ДАННЫЕ
+    // ============================================
+    private readonly productConfigs: Product[];     // Конфигурация всех продуктов (из props)
+    private layouts: Layout[] = [];                 // Массив всех слоев (изображения/текст)
 
-    // Canvas данные (если будут использоваться)
-    canvases: fabric.Canvas[] = [];
-    layersCanvases: fabric.StaticCanvas[] = [];
-    activeCanvas: fabric.Canvas | null = null;
+    // ============================================
+    // CANVAS ДАННЫЕ
+    // ============================================
+    canvases: fabric.Canvas[] = [];                 // Массив canvas для каждой стороны
+    layersCanvases: fabric.StaticCanvas[] = [];     // Статические canvas для превью слоев
+    activeCanvas: fabric.Canvas | null = null;      // Текущий активный canvas
 
-    // События (типизированный EventEmitter)
-    readonly events = new TypedEventEmitter<EditorEventMap>();
+    // ============================================
+    // СИСТЕМА СОБЫТИЙ
+    // ============================================
+    readonly events = new TypedEventEmitter<EditorEventMap>();  // Типизированный EventEmitter
 
-    // История слоёв (для undo/redo)
-    private layersHistory: LayersHistoryItem[] = [];
-    private currentHistoryIndex: number = -1;
-    private isRestoringFromHistory: boolean = false;
+    // ============================================
+    // ИСТОРИЯ ДЕЙСТВИЙ (undo/redo)
+    // ============================================
+    private layersHistory: LayersHistoryItem[] = [];    // История всех состояний слоев
+    private currentHistoryIndex: number = -1;           // Текущий индекс в истории
+    private isRestoringFromHistory: boolean = false;    // Флаг: идет восстановление из истории
 
-    // Прочее
-    private isLoading: boolean = true;
-    private isAddingToCart: boolean = false; // НОВОЕ: Флаг для блокировки повторных добавлений в корзину
-    private isGenerating: boolean = false; // НОВОЕ: Флаг для блокировки повторных генераций
-    private loadingTime: number = 0;
-    private loadingInterval: NodeJS.Timeout | null = null;
+    // ============================================
+    // ФЛАГИ И ТАЙМЕРЫ
+    // ============================================
+    private isLoading: boolean = true;                  // Флаг: идет загрузка
+    private isAddingToCart: boolean = false;            // Флаг: идет добавление в корзину (защита от дубликатов)
+    private isGenerating: boolean = false;              // Флаг: идет генерация (защита от дубликатов)
+    private loadingTime: number = 0;                    // Счетчик времени загрузки (секунды)
+    private loadingInterval: NodeJS.Timeout | null = null;  // Интервал для обновления времени загрузки
 
-    // Массивы для хранения UI элементов
-    private colorBlocks: HTMLElement[] = [];
-    private sizeBlocks: HTMLElement[] = [];
-    private productBlocks: HTMLElement[] = [];
+    // ============================================
+    // МАССИВЫ UI ЭЛЕМЕНТОВ
+    // ============================================
+    private colorBlocks: HTMLElement[] = [];        // Массив элементов цветов
+    private sizeBlocks: HTMLElement[] = [];         // Массив элементов размеров
+    private productBlocks: HTMLElement[] = [];      // Массив элементов продуктов
 
-    // Состояние загрузки изображения
-    private loadedUserImage: string | null = null;
-    private editorLoadWithAi: boolean = false;
+    // ============================================
+    // СОСТОЯНИЕ ЗАГРУЗКИ ИЗОБРАЖЕНИЯ
+    // ============================================
+    private loadedUserImage: string | null = null;  // Data URL загруженного пользователем изображения
+    private editorLoadWithAi: boolean = false;      // Флаг: загружать с AI обработкой
 
-    // Кэш для изображений и DOM элементов
-    private imageCache: Map<string, string> = new Map();
-    private loadingElementsCache: {
+    // ============================================
+    // КЭШ ДЛЯ ОПТИМИЗАЦИИ
+    // ============================================
+    private imageCache: Map<string, string> = new Map();   // Кэш изображений (URL -> base64)
+    private loadingElementsCache: {                         // Кэш DOM элементов загрузки
         loadingText?: HTMLElement;
         spinner?: HTMLElement;
     } = {};
+    private productCache: Map<Product['type'], Product> = new Map();    // Кэш продуктов
+    private mockupCache: Map<string, string | null> = new Map();        // Кэш мокапов
 
-    // Мемоизация для часто используемых методов
-    private productCache: Map<Product['type'], Product> = new Map();
-    private mockupCache: Map<string, string | null> = new Map();
-
-    // Геттеры для состояния
+    // ============================================
+    // ГЕТТЕРЫ ДЛЯ СОСТОЯНИЯ (read-only доступ извне)
+    // ============================================
     get selectType(): Product['type'] { return this._selectType; }
     get selectColor(): Color { return this._selectColor; }
     get selectSide(): SideEnum { return this._selectSide; }
@@ -1332,7 +1394,12 @@ export default class Editor {
                     image_url: exportedArt[side] || '',
                 }));
 
-                // ОПТИМИЗАЦИЯ: Параллельная загрузка изображений на сервер
+                // ========================================
+                // ОПТИМИЗАЦИЯ (2025): Параллельная загрузка изображений на сервер
+                // ========================================
+                // БЫЛО: Загрузка по очереди (медленно)
+                // СТАЛО: Все изображения загружаются одновременно через Promise.all
+                // РЕЗУЛЬТАТ: Время загрузки сократилось в N раз (где N - количество сторон)
                 console.debug('[order] Загрузка изображений на сервер...');
                 const uploadPromises = sides.map(async (side) => {
                     const base64 = side.image_url.split(',')[1]!;
@@ -1340,7 +1407,10 @@ export default class Editor {
                     return { side, uploadedUrl };
                 });
 
+                // Ждем завершения всех загрузок одновременно
                 const uploadedSides = await Promise.all(uploadPromises);
+
+                // Обновляем URL для всех сторон
                 uploadedSides.forEach(({ side, uploadedUrl }) => {
                     side.image_url = uploadedUrl;
                 });
@@ -2484,7 +2554,9 @@ export default class Editor {
                 left: absoluteLeft,
                 top: absoluteTop,
                 name: layout.id,
-                layoutUrl: layout.url, // ИСПРАВЛЕНИЕ: Сохраняем URL для отслеживания изменений
+                layoutUrl: layout.url, // ИСПРАВЛЕНИЕ (2025): Сохраняем URL изображения в объекте canvas
+                // Это позволяет отслеживать изменения URL при редактировании слоя
+                // В методе updateLayoutsForSide сравнивается layoutUrl с layout.url
                 scaleX: layout.size,
                 scaleY: layout.size * layout.aspectRatio,
                 angle: layout.angle,
@@ -2507,19 +2579,48 @@ export default class Editor {
         }
     }
 
+    // ============================================
+    // ОБНОВЛЕНИЕ СЛОЁВ НА CANVAS
+    // ============================================
+
+    /**
+     * Обновляет слои на текущем активном canvas
+     * Вызывается после изменения массива layouts
+     */
     updateLayouts(): void {
         if (!this.activeCanvas) return;
         this.updateLayoutsForSide(this._selectSide);
     }
 
-    // Обновление слоёв для конкретной стороны
+    /**
+     * Обновление слоёв для конкретной стороны (front/back)
+     * 
+     * ЧТО ДЕЛАЕТ:
+     * 1. Находит canvas для указанной стороны
+     * 2. Удаляет объекты, которых больше нет в массиве layouts
+     * 3. Проверяет существующие объекты на изменения (сравнивает URL изображений)
+     * 4. Удаляет и заново добавляет измененные объекты (для обновления изображения)
+     * 5. Добавляет новые объекты
+     * 6. Перерисовывает canvas
+     * 
+     * ИСПРАВЛЕНИЕ (2025):
+     * Добавлена проверка изменений URL для существующих ImageLayout.
+     * Раньше при редактировании слоя (изменение layout.url) canvas не обновлялся,
+     * пользователь видел старое изображение. Теперь при изменении URL объект
+     * удаляется и добавляется заново с новым изображением.
+     * 
+     * @param side - Сторона для обновления (front/back)
+     */
     private updateLayoutsForSide(side: SideEnum): void {
+        // Находим canvas для указанной стороны
         const canvas = this.canvases.find(c => (c as any).side === side);
         if (!canvas) return;
 
+        // Получаем все объекты на canvas
         const objects = canvas.getObjects();
 
-        // Удаляем объекты, которых больше нет в layouts
+        // ШАГ 1: Удаляем объекты, которых больше нет в массиве layouts
+        // Исключаем служебные объекты (area:border, area:clip, guideline)
         const objectsToRemove = objects
             .filter(obj => (obj as any).name !== 'area:border' && (obj as any).name !== 'area:clip' && !(obj as any).name?.startsWith('guideline'))
             .filter(obj => !this.layouts.find(layout => layout.id === (obj as any).name));
@@ -2528,26 +2629,31 @@ export default class Editor {
             canvas.remove(obj);
         });
 
+        // Фильтруем layouts для текущей стороны
         const layoutsForSide = this.layouts.filter(layout => layout.view === side);
 
-        // ИСПРАВЛЕНИЕ: Проверяем существующие объекты на необходимость обновления
-        const objectsToUpdate: Layout[] = [];
-        const objectsToAdd: Layout[] = [];
+        // ШАГ 2: Проверяем существующие объекты на необходимость обновления
+        const objectsToUpdate: Layout[] = [];   // Объекты для обновления (изменился URL)
+        const objectsToAdd: Layout[] = [];      // Новые объекты для добавления
 
         layoutsForSide.forEach(layout => {
             const existingObj = objects.find(obj => (obj as any).name === layout.id);
             if (existingObj) {
+                // Объект уже существует на canvas
                 // Проверяем, изменился ли URL изображения (для ImageLayout)
                 if (layout.isImageLayout() && (existingObj as any).layoutUrl !== layout.url) {
                     console.debug(`[canvas] Layout ${layout.id} изменился, требуется обновление`);
                     objectsToUpdate.push(layout);
                 }
+                // Если URL не изменился - ничего не делаем, объект остается на месте
             } else {
+                // Объекта нет на canvas - добавляем
                 objectsToAdd.push(layout);
             }
         });
 
-        // ИСПРАВЛЕНИЕ: Удаляем и заново добавляем измененные объекты
+        // ШАГ 3: Удаляем и заново добавляем измененные объекты
+        // Это необходимо для обновления изображения (fabric.js не умеет менять src у Image)
         objectsToUpdate.forEach(layout => {
             const existingObj = objects.find(obj => (obj as any).name === layout.id);
             if (existingObj) {
@@ -2558,11 +2664,12 @@ export default class Editor {
             this.addLayoutToCanvas(layout);
         });
 
-        // Добавляем новые объекты
+        // ШАГ 4: Добавляем новые объекты
         objectsToAdd.forEach(layout => {
             this.addLayoutToCanvas(layout);
         });
 
+        // ШАГ 5: Перерисовываем canvas
         canvas.renderAll();
     }
 
@@ -2670,7 +2777,14 @@ export default class Editor {
 
         console.debug('[export] Найдены стороны с слоями:', sidesWithLayers, '(front первый)', withMockup ? 'с мокапом' : 'без мокапа', `разрешение: ${resolution}px`);
 
-        // ОПТИМИЗАЦИЯ: Параллельный экспорт всех сторон вместо последовательного
+        // ========================================
+        // ОПТИМИЗАЦИЯ (2025): Параллельный экспорт всех сторон вместо последовательного
+        // ========================================
+        // БЫЛО: for (const side of sides) { await exportSide(side); }
+        //       - Экспорт front, затем back (последовательно)
+        // СТАЛО: Promise.all([exportSide('front'), exportSide('back')])
+        //        - Обе стороны экспортируются одновременно
+        // РЕЗУЛЬТАТ: Время экспорта сокращено примерно в 2 раза
         const exportPromises = sidesWithLayers.map(async (side) => {
             try {
                 const exportedSide = await this.exportSide(side as SideEnum, withMockup, resolution);
@@ -2684,6 +2798,7 @@ export default class Editor {
             return null;
         });
 
+        // Ждем завершения экспорта всех сторон одновременно
         const exportedSides = await Promise.all(exportPromises);
 
         // Формируем результат из успешно экспортированных сторон
