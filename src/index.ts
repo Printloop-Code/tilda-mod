@@ -1,6 +1,7 @@
 import Popup from './components/Popup';
 import Editor from './components/Editor';
 import { productConfigs, editorBlocks, formConfig } from './config/products';
+import { CardForm } from './components/CardForm';
 
 if (document.readyState !== 'loading') {
     createPopup();
@@ -23,31 +24,20 @@ new Editor({
     productConfigs: productConfigs,
 });
 
-// // Инициализация CardForm
-// window.onload = () => {
-//     new CardForm({
-//         cardBlockId: "#rec1334316211",
-//         rules: [
-//             {
-//                 variable: "additional_services",
-//                 actions: [
-//                     {
-//                         value: "Срочный заказ, печать до 2 дней (+500р)",
-//                         sum: 500
-//                     }
-//                 ]
-//             },
-//             {
-//                 variable: "delivery",
-//                 actions: [
-//                     {
-//                         value: "Доставка до ПВЗ",
-//                     },
-//                     {
-//                         value: "Доставка курьером"
-//                     }
-//                 ]
-//             }
-//         ]
-//     });
-// };
+// Инициализация CardForm
+window.onload = () => {
+    new CardForm({
+        cardBlockId: "#rec1362370811",
+        rules: [
+            {
+                variable: "term_variant",
+                actions: [
+                    {
+                        value: "1-2 дня (+500р на изделие)",
+                        sum: 500
+                    }
+                ]
+            }
+        ]
+    });
+};

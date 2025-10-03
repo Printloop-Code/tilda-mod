@@ -125,6 +125,17 @@ export default class Editor {
     private loadedUserImage: string | null = null;
     private editorLoadWithAi: boolean = false;
 
+    // Кэш для изображений и DOM элементов
+    private imageCache: Map<string, string> = new Map();
+    private loadingElementsCache: {
+        loadingText?: HTMLElement;
+        spinner?: HTMLElement;
+    } = {};
+
+    // Мемоизация для часто используемых методов
+    private productCache: Map<Product['type'], Product> = new Map();
+    private mockupCache: Map<string, string | null> = new Map();
+
     // Геттеры для состояния
     get selectType(): Product['type'] { return this._selectType; }
     get selectColor(): Color { return this._selectColor; }
@@ -246,6 +257,32 @@ export default class Editor {
 
         // Асинхронная инициализация (миграция и загрузка состояния)
         this.initializeEditor();
+
+        (window as any).getLayouts = () => {
+            return this.layouts.map(layout => ({ ...layout, url: undefined }));
+        }
+
+        (window as any).loadLayouts = (layouts: Layout[]) => {
+            this.layouts = layouts.map(layout => Layout.fromJSON(layout));
+
+            this.updateLayouts();
+            this.showLayoutList();
+        }
+
+        (window as any).exportPrint = async () => {
+            const exportedArt = await this.exportArt(false, 4096);
+            for (const side of Object.keys(exportedArt)) {
+                const downloadLink = document.createElement('a');
+                document.body.appendChild(downloadLink);
+
+                downloadLink.href = exportedArt[side]!;
+                downloadLink.target = '_self';
+                downloadLink.download = `${side}.png`;
+                downloadLink.click();
+            }
+
+            return exportedArt;
+        }
     }
 
     // Инициализация UI компонентов
@@ -313,6 +350,17 @@ export default class Editor {
             // Загрузка сохраненного состояния
             await this.loadState();
 
+            // if (this.layouts.length === 0) {
+            //     this.addLayout(new Layout({
+            //         id: "start",
+            //         view: "front",
+            //         type: "image",
+            //         url: "https://static.tildacdn.com/tild3930-3533-4464-b830-623133666233/Group_20.svg",
+            //         name: "PrintLoop",
+            //         position: { x: 0.22, y: 0.40 },
+            //     }))
+            // }
+
             // Предзагрузка mockups
             await this.preloadAllMockups();
 
@@ -333,6 +381,11 @@ export default class Editor {
     }
 
     private initEvents(): void {
+
+        window.onbeforeunload = () => {
+            return alert("Вы уверены, что хотите покинуть эту страницу?");
+        }
+
         // Обновление мокапа
         this.events.on(EditorEventType.MOCKUP_UPDATED, (dataURL) => {
             this.mockupBlock.src = dataURL;
@@ -340,13 +393,16 @@ export default class Editor {
     }
 
     private initLoadingEvents(): void {
+        // Кэшируем DOM элементы для оптимизации
+        this.loadingElementsCache.loadingText = this.editorLoadingBlock.querySelector('#loading-text') as HTMLElement;
+        this.loadingElementsCache.spinner = this.editorLoadingBlock.querySelector('#spinner') as HTMLElement;
+
         // Событие обновления времени загрузки
         this.events.on(EditorEventType.LOADING_TIME_UPDATED, (loadingTime) => {
+            const { loadingText, spinner } = this.loadingElementsCache;
+
             if (this.isLoading) {
                 if (this.loadingTime > 5) {
-                    const loadingText = this.editorLoadingBlock.querySelector('#loading-text') as HTMLElement;
-                    const spinner = this.editorLoadingBlock.querySelector('#spinner') as HTMLElement;
-
                     if (loadingText) {
                         loadingText.style.display = "block";
                         loadingText.innerText = `${(this.loadingTime / 10).toFixed(1)}`;
@@ -356,9 +412,6 @@ export default class Editor {
                     }
                     this.editorLoadingBlock.style.backgroundColor = "rgba(255, 255, 255, 0.745)";
                 } else {
-                    const loadingText = this.editorLoadingBlock.querySelector('#loading-text') as HTMLElement;
-                    const spinner = this.editorLoadingBlock.querySelector('#spinner') as HTMLElement;
-
                     if (loadingText) {
                         loadingText.style.display = "none";
                         loadingText.innerText = "";
@@ -369,7 +422,6 @@ export default class Editor {
                     this.editorLoadingBlock.style.backgroundColor = "rgba(255, 255, 255, 0)";
                 }
             } else {
-                const loadingText = this.editorLoadingBlock.querySelector('#loading-text') as HTMLElement;
                 if (loadingText) {
                     loadingText.style.display = "none";
                     loadingText.innerText = "";
@@ -379,6 +431,8 @@ export default class Editor {
 
         // Событие начала/окончания загрузки мокапа
         this.events.on(EditorEventType.MOCKUP_LOADING, (isLoading) => {
+            const { loadingText, spinner } = this.loadingElementsCache;
+
             if (isLoading) {
                 // Начало загрузки
                 if (this.loadingInterval) {
@@ -395,9 +449,6 @@ export default class Editor {
             } else {
                 // Окончание загрузки
                 this.editorLoadingBlock.style.backgroundColor = "rgba(255, 255, 255, 0)";
-
-                const loadingText = this.editorLoadingBlock.querySelector('#loading-text') as HTMLElement;
-                const spinner = this.editorLoadingBlock.querySelector('#spinner') as HTMLElement;
 
                 if (loadingText) {
                     loadingText.style.display = "none";
@@ -537,19 +588,53 @@ export default class Editor {
         }
     }
 
-    // Поиск URL mockup по текущим параметрам
+    // Поиск URL mockup по текущим параметрам с мемоизацией
     private findMockupUrl(): string | null {
-        const product = this.productConfigs.find(p => p.type === this._selectType);
-        if (!product) return null;
+        const cacheKey = `${this._selectType}-${this._selectSide}-${this._selectColor.name}`;
+
+        if (this.mockupCache.has(cacheKey)) {
+            return this.mockupCache.get(cacheKey)!;
+        }
+
+        const product = this.getProductByType(this._selectType);
+        if (!product) {
+            this.mockupCache.set(cacheKey, null);
+            return null;
+        }
 
         const mockup = product.mockups.find(
             m => m.side === this._selectSide && m.color.name === this._selectColor.name
         );
-        return mockup?.url || null;
+
+        const url = mockup?.url || null;
+        this.mockupCache.set(cacheKey, url);
+        return url;
     }
 
-    // Загрузка и конвертация изображения в DataURL
-    private loadAndConvertImage(imageUrl: string): Promise<string> {
+    // Вспомогательный метод для получения продукта с мемоизацией
+    private getProductByType(type: Product['type']): Product | undefined {
+        if (!this.productCache.has(type)) {
+            const product = this.productConfigs.find(p => p.type === type);
+            if (product) {
+                this.productCache.set(type, product);
+            }
+        }
+        return this.productCache.get(type);
+    }
+
+    // Очистка кэша mockup при изменении состояния
+    private clearMockupCache(): void {
+        this.mockupCache.clear();
+    }
+
+    // Загрузка и конвертация изображения в DataURL с кэшированием
+    private async loadAndConvertImage(imageUrl: string): Promise<string> {
+        // Проверяем кэш
+        if (this.imageCache.has(imageUrl)) {
+            console.debug('[cache] Изображение загружено из кэша:', imageUrl);
+            return this.imageCache.get(imageUrl)!;
+        }
+
         return new Promise((resolve, reject) => {
             const image = new Image();
             image.setAttribute('crossOrigin', 'anonymous');
@@ -568,6 +653,11 @@ export default class Editor {
 
                     ctx.drawImage(image, 0, 0);
                     const dataURL = canvas.toDataURL('image/png');
+
+                    // Сохраняем в кэш
+                    this.imageCache.set(imageUrl, dataURL);
+                    console.debug('[cache] Изображение сохранено в кэш:', imageUrl);
+
                     resolve(dataURL);
                 } catch (error) {
                     reject(error);
@@ -777,6 +867,7 @@ export default class Editor {
     setType(type: Product['type']): void {
         if (this._selectType !== type) {
             this._selectType = type;
+            this.clearMockupCache(); // Очищаем кэш при изменении типа
             this.emit(EditorEventType.STATE_CHANGED, undefined);
             this.saveState().catch(err => console.error('[state] Ошибка сохранения:', err));
         }
@@ -785,6 +876,7 @@ export default class Editor {
     setColor(color: Color): void {
         if (this._selectColor !== color) {
             this._selectColor = color;
+            this.clearMockupCache(); // Очищаем кэш при изменении цвета
             this.emit(EditorEventType.STATE_CHANGED, undefined);
             this.saveState().catch(err => console.error('[state] Ошибка сохранения:', err));
         }
@@ -793,6 +885,7 @@ export default class Editor {
     setSide(side: SideEnum): void {
         if (this._selectSide !== side) {
             this._selectSide = side;
+            this.clearMockupCache(); // Очищаем кэш при изменении стороны
             this.emit(EditorEventType.STATE_CHANGED, undefined);
             this.saveState().catch(err => console.error('[state] Ошибка сохранения:', err));
         }
@@ -952,7 +1045,7 @@ export default class Editor {
         if (!this.editorColorsListBlock || !this.editorColorItemBlock) return;
 
         console.debug(`[settings] init colors for ${this._selectType}`);
-        const product = this.productConfigs.find(p => p.type === this._selectType);
+        const product = this.getProductByType(this._selectType);
         if (!product) return;
 
         this.editorColorItemBlock.style.display = 'none';
@@ -997,7 +1090,7 @@ export default class Editor {
         if (!this.editorSizesListBlock || !this.editorSizeItemBlock) return;
 
         console.debug(`[settings] init sizes for ${this._selectType}`);
-        const product = this.productConfigs.find(p => p.type === this._selectType);
+        const product = this.getProductByType(this._selectType);
         if (!product || !product.sizes) return;
 
         this.editorSizeItemBlock.style.display = 'none';
@@ -1130,7 +1223,6 @@ export default class Editor {
                 removeBlock.onclick = () => {
                     this.removeLayout(layout.id);
                     this.showLayoutList();
-                    this.updateSum();
                     if (isEditing) this.cancelEditLayout();
                 };
 
@@ -1139,10 +1231,10 @@ export default class Editor {
             }
 
             if (editBlock) {
-                if (isEditing) {
+                if (isEditing || layout.id === "start") {
                     editBlock.style.display = 'none';
                 } else {
-                    editBlock.style.display = 'block';
+                    editBlock.style.display = 'table';
                 }
                 editBlock.style.cursor = 'pointer';
                 editBlock.onclick = () => this.editLayout(layout);
@@ -1154,6 +1246,7 @@ export default class Editor {
             this.editorLayoutsListBlock!.firstElementChild!.appendChild(layoutItem);
         });
 
+        this.updateSum();
         console.debug(`[settings] [layouts] layouts shown: ${this.editorLayoutsListBlock.firstElementChild!.children.length}`);
     }
 
@@ -1171,7 +1264,7 @@ export default class Editor {
                 console.debug('[order] Начало создания заказа');
 
                 // Экспортируем дизайн со всех сторон
-                const exportedArt = await this.exportArt();
+                const exportedArt = await this.exportArt(true, 512);
                 console.debug('[order] Экспорт дизайна завершен:', Object.keys(exportedArt));
 
                 // Преобразуем в формат для отправки
@@ -1189,6 +1282,19 @@ export default class Editor {
 
                 // Создаем продукт и добавляем в корзину
                 const productName = `${this.capitalizeFirstLetter(this.getProductName())} с вашим ${Object.keys(exportedArt).length == 1 ? 'односторонним' : 'двухсторонним'} принтом`;
+
+
+                const layouts = this.layouts.map(layout => ({ ...layout, url: undefined }));
+
+                const userId = await this.storageManager.getUserId();
+                const formData = new FormData();
+                formData.append("layouts", JSON.stringify(layouts));
+                formData.append("user_id", userId);
+
+                fetch("https://primary-production-654c.up.railway.app/webhook/cart", {
+                    method: "POST",
+                    body: formData
+                })
 
                 createProduct({
                     quantity: this.getQuantity(),
@@ -1226,10 +1332,35 @@ export default class Editor {
 
         if (!input) return;
 
-        setInterval(() => {
-            const quantity = this.getQuantity();
-            input.value = quantity < 1 ? '1' : quantity.toString();
-        }, 50);
+        // Оптимизация: используем событие вместо setInterval для лучшей производительности
+        const validateQuantity = () => {
+            const value = input.value.trim();
+
+            // Если пустое значение или не число
+            if (value === '' || isNaN(Number(value))) {
+                input.value = '1';
+                return;
+            }
+
+            const quantity = parseInt(value, 10);
+
+            // Если меньше 1 или равно 0
+            if (quantity < 1 || quantity === 0) {
+                input.value = '1';
+            }
+        };
+
+        // Валидация при вводе (в реальном времени)
+        input.addEventListener('input', validateQuantity);
+
+        // Валидация при потере фокуса (окончательная проверка)
+        input.addEventListener('blur', validateQuantity);
+
+        // Валидация при изменении
+        input.addEventListener('change', validateQuantity);
+
+        // Начальная валидация
+        validateQuantity();
     }
 
     private async initForm(): Promise<void> {
@@ -1246,16 +1377,10 @@ export default class Editor {
             const prompt = formInput.value;
 
             // Валидация
-            if (this.loadedUserImage && this.editorLoadWithAi) {
-                if (!prompt || prompt.trim() === "" || prompt.length < 3) {
+            if (!this.loadedUserImage) {
+                if (!prompt || prompt.trim() === "" || prompt.length < 1) {
                     console.warn('[form] [input] prompt is empty or too short');
-                    alert("Минимальная длина запроса 3 символа");
-                    return;
-                }
-            } else if (!this.loadedUserImage) {
-                if (!prompt || prompt.trim() === "" || prompt.length < 3) {
-                    console.warn('[form] [input] prompt is empty or too short');
-                    alert("Минимальная длина запроса 3 символа");
+                    alert("Минимальная длина запроса 1 символ");
                     return;
                 }
             }
@@ -1267,13 +1392,14 @@ export default class Editor {
             const layoutId = this._selectLayout || Layout.generateId();
 
             try {
-                const url = await generateImage(
+                const url = await generateImage({
                     prompt,
-                    this._selectColor.name,
-                    this.loadedUserImage || undefined,
-                    this.editorLoadWithAi,
-                    layoutId
-                );
+                    shirtColor: this._selectColor.name,
+                    image: this._selectLayout ? this.loadedUserImage !== this.layouts.find(layout => layout.id === this._selectLayout)?.url ? this.loadedUserImage : null : this.loadedUserImage,
+                    withAi: this.editorLoadWithAi,
+                    layoutId,
+                    isNew: this._selectLayout ? false : true,
+                });
 
                 this.emit(EditorEventType.MOCKUP_LOADING, false);
 
@@ -1310,9 +1436,7 @@ export default class Editor {
                 formInput.value = "";
 
                 // Убираем подсветку с textarea
-                formInput.style.border = '';
-                formInput.style.outline = '';
-                formInput.style.boxShadow = '';
+                formInput.style.borderColor = '#f3f3f3';
 
                 this._selectLayout = null;
 
@@ -1397,9 +1521,10 @@ export default class Editor {
 
     changeProduct(productType: Product['type']): void {
         this._selectType = productType;
+        this.clearMockupCache(); // Очищаем кэш при смене продукта
 
         // Проверяем, существует ли текущий цвет для нового продукта
-        const product = this.productConfigs.find(p => p.type === productType);
+        const product = this.getProductByType(productType);
         if (product) {
             const mockupWithCurrentColor = product.mockups.find(
                 m => m.side === this._selectSide && m.color.name === this._selectColor.name
@@ -1415,24 +1540,29 @@ export default class Editor {
             }
         }
 
-        if (this.productBlocks.length > 0) {
-            this.productBlocks.forEach(block => {
-                block.style.background = 'rgb(222 222 222)';
-            });
-            const activeBlock = this.productBlocks.find(block =>
-                block.classList.contains('editor-settings__product-block__' + this._selectType)
-            );
-            if (activeBlock) {
-                activeBlock.style.background = '';
-            }
-        }
-
+        this.updateProductBlocksUI();
         this.updateMockup();
         this.loadProduct();
         this.showLayoutList();
         this.updateLayouts();
         this.updateSum();
         this.saveState();
+    }
+
+    // Вспомогательный метод для обновления UI блоков продуктов
+    private updateProductBlocksUI(): void {
+        if (this.productBlocks.length === 0) return;
+
+        this.productBlocks.forEach(block => {
+            block.style.background = 'rgb(222 222 222)';
+        });
+
+        const activeBlock = this.productBlocks.find(block =>
+            block.classList.contains('editor-settings__product-block__' + this._selectType)
+        );
+        if (activeBlock) {
+            activeBlock.style.background = '';
+        }
     }
 
     changeSide(): void {
@@ -1446,52 +1576,62 @@ export default class Editor {
     }
 
     changeColor(colorName: string): void {
-        const product = this.productConfigs.find(p => p.type === this._selectType);
+        const product = this.getProductByType(this._selectType);
         if (!product) return;
 
         const mockup = product.mockups.find(m => m.color.name === colorName);
         if (!mockup) return;
 
         this._selectColor = mockup.color;
+        this.clearMockupCache(); // Очищаем кэш при смене цвета
 
-        if (this.colorBlocks.length > 0) {
-            this.colorBlocks.forEach(block => {
-                block.style.borderColor = '#f3f3f3';
-            });
-            const activeBlock = this.colorBlocks.find(block =>
-                block.classList.contains('editor-settings__color-block__' + colorName)
-            );
-            if (activeBlock) {
-                activeBlock.style.borderColor = '';
-            }
-        }
-
+        this.updateColorBlocksUI(colorName);
         this.updateMockup();
         this.saveState();
     }
 
-    changeSize(size: Size): void {
-        if (this.sizeBlocks.length > 0) {
-            this.sizeBlocks.forEach(block => {
-                const borderBlock = block.firstElementChild as HTMLElement;
-                if (borderBlock) {
-                    borderBlock.style.borderColor = '#f3f3f3';
-                }
-            });
+    // Вспомогательный метод для обновления UI блоков цветов
+    private updateColorBlocksUI(colorName: string): void {
+        if (this.colorBlocks.length === 0) return;
 
-            const activeBlock = this.sizeBlocks.find(block =>
-                block.classList.contains('editor-settings__size-block__' + size)
-            );
-            if (activeBlock) {
-                const borderBlock = activeBlock.firstElementChild as HTMLElement;
-                if (borderBlock) {
-                    borderBlock.style.borderColor = '';
-                }
-            }
+        this.colorBlocks.forEach(block => {
+            block.style.borderColor = '#f3f3f3';
+        });
+
+        const activeBlock = this.colorBlocks.find(block =>
+            block.classList.contains('editor-settings__color-block__' + colorName)
+        );
+        if (activeBlock) {
+            activeBlock.style.borderColor = '';
         }
+    }
 
+    changeSize(size: Size): void {
+        this.updateSizeBlocksUI(size);
         this._selectSize = size;
         this.saveState();
+    }
+
+    // Вспомогательный метод для обновления UI блоков размеров
+    private updateSizeBlocksUI(size: Size): void {
+        if (this.sizeBlocks.length === 0) return;
+
+        this.sizeBlocks.forEach(block => {
+            const borderBlock = block.firstElementChild as HTMLElement;
+            if (borderBlock) {
+                borderBlock.style.borderColor = '#f3f3f3';
+            }
+        });
+
+        const activeBlock = this.sizeBlocks.find(block =>
+            block.classList.contains('editor-settings__size-block__' + size)
+        );
+        if (activeBlock) {
+            const borderBlock = activeBlock.firstElementChild as HTMLElement;
+            if (borderBlock) {
+                borderBlock.style.borderColor = '';
+            }
+        }
     }
 
     editLayout(layout: Layout): void {
@@ -1564,7 +1704,7 @@ export default class Editor {
 
         // Инициализируем кнопку "С ИИ"
         if (this.editorLoadWithAiButton) {
-            this.editorLoadWithAiButton.style.display = 'block';
+            this.editorLoadWithAiButton.style.display = 'table';
             this.editorLoadWithAiButton.style.cursor = 'pointer';
             this.editorLoadWithAiButton.onclick = () => {
                 this.changeLoadWithAi(true);
@@ -1573,7 +1713,7 @@ export default class Editor {
 
         // Инициализируем кнопку "Без ИИ"
         if (this.editorLoadWithoutAiButton) {
-            this.editorLoadWithoutAiButton.style.display = 'block';
+            this.editorLoadWithoutAiButton.style.display = 'table';
             this.editorLoadWithoutAiButton.style.cursor = 'pointer';
             this.editorLoadWithoutAiButton.onclick = () => {
                 this.changeLoadWithAi(false);
@@ -1590,11 +1730,18 @@ export default class Editor {
 
     }
 
+    private showAiButtons(): void {
+        if (this.editorLoadWithAiButton) {
+            (this.editorLoadWithAiButton.parentElement?.parentElement?.parentElement as HTMLElement).style.display = 'table';
+        }
+    }
+
     uploadUserImage(): void {
         console.debug('[upload user image] starting user image upload');
 
         // Инициализируем кнопки ИИ
         this.initAiButtons();
+        this.showAiButtons();
 
         const fileInput = document.createElement('input');
         fileInput.type = 'file';
@@ -1643,7 +1790,7 @@ export default class Editor {
         this.loadedUserImage = image;
 
         if (this.editorUploadViewBlock) {
-            this.editorUploadViewBlock.style.display = 'block';
+            this.editorUploadViewBlock.style.display = 'table';
             const imageBlock = getLastChild(this.editorUploadViewBlock);
             if (imageBlock) {
                 imageBlock.style.backgroundImage = `url(${image})`;
@@ -1723,13 +1870,13 @@ export default class Editor {
         const hasFront = this.layouts.some(layout => layout.view === 'front');
         const hasBack = this.layouts.some(layout => layout.view === 'back');
 
-        if (hasBack && hasFront) {
-            return 1920 + 500;
-        }
-        if (hasBack || hasFront) {
-            return 1920;
-        }
-        return 0;
+        const product = this.getProductByType(this._selectType);
+        if (!product) return 0;
+
+        const price = hasBack && hasFront
+            ? product.doubleSidedPrice
+            : product.price;
+        return price;
     }
 
     updateSum(): void {
@@ -1755,7 +1902,7 @@ export default class Editor {
     // ===========================================
 
     loadProduct(): void {
-        const product = this.productConfigs.find(p => p.type === this._selectType);
+        const product = this.getProductByType(this._selectType);
         if (!product || !product.printConfig) {
             console.warn('[product] product or printConfig not found');
             return;
@@ -2070,7 +2217,7 @@ export default class Editor {
             return;
         }
 
-        const product = this.productConfigs.find(p => p.type === this._selectType);
+        const product = this.getProductByType(this._selectType);
         if (!product) return;
 
         const printConfig = product.printConfig.find(pc => pc.side === layout.view);
@@ -2119,8 +2266,15 @@ export default class Editor {
 
     updateLayouts(): void {
         if (!this.activeCanvas) return;
+        this.updateLayoutsForSide(this._selectSide);
+    }
 
-        const objects = this.activeCanvas.getObjects();
+    // Обновление слоёв для конкретной стороны
+    private updateLayoutsForSide(side: SideEnum): void {
+        const canvas = this.canvases.find(c => (c as any).side === side);
+        if (!canvas) return;
+
+        const objects = canvas.getObjects();
 
         // Удаляем объекты, которых больше нет в layouts
         const objectsToRemove = objects
@@ -2128,18 +2282,18 @@ export default class Editor {
             .filter(obj => !this.layouts.find(layout => layout.id === (obj as any).name));
 
         objectsToRemove.forEach(obj => {
-            this.activeCanvas?.remove(obj);
+            canvas.remove(obj);
         });
 
         // Добавляем новые объекты
-        const layoutsForCurrentSide = this.layouts.filter(layout => layout.view === this._selectSide);
-        const objectsToAdd = layoutsForCurrentSide.filter(layout => !objects.find(obj => (obj as any).name === layout.id));
+        const layoutsForSide = this.layouts.filter(layout => layout.view === side);
+        const objectsToAdd = layoutsForSide.filter(layout => !objects.find(obj => (obj as any).name === layout.id));
 
         objectsToAdd.forEach(layout => {
             this.addLayoutToCanvas(layout);
         });
 
-        this.activeCanvas.renderAll();
+        canvas.renderAll();
     }
 
     // ===========================================
@@ -2164,34 +2318,9 @@ export default class Editor {
         console.debug('[preload] Предзагрузка завершена');
     }
 
+    // Используем единый метод для конвертации изображений
     private async getImageData(url: string): Promise<string> {
-        return new Promise((resolve, reject) => {
-            const img = new Image();
-            img.crossOrigin = 'anonymous';
-
-            img.onload = () => {
-                try {
-                    const canvas = document.createElement('canvas');
-                    canvas.width = img.width;
-                    canvas.height = img.height;
-
-                    const ctx = canvas.getContext('2d');
-                    if (!ctx) {
-                        reject(new Error('Не удалось получить контекст canvas'));
-                        return;
-                    }
-
-                    ctx.drawImage(img, 0, 0);
-                    const dataUrl = canvas.toDataURL('image/png');
-                    resolve(dataUrl);
-                } catch (error) {
-                    reject(error);
-                }
-            };
-
-            img.onerror = () => reject(new Error(`Не удалось загрузить изображение: ${url}`));
-            img.src = url;
-        });
+        return this.loadAndConvertImage(url);
     }
 
     async uploadImage(file: File): Promise<string> {
@@ -2243,7 +2372,7 @@ export default class Editor {
     }
 
     getProductName(): string {
-        return this.productConfigs.find(product => product.type === this._selectType)?.productName || '';
+        return this.getProductByType(this._selectType)?.productName || '';
     }
 
     capitalizeFirstLetter(string: string): string {
@@ -2251,9 +2380,12 @@ export default class Editor {
     }
 
     getMockupUrl(side: SideEnum): string | null {
-        const mockup = this.productConfigs
-            .find(product => product.type === this._selectType)?.mockups
-            .find(mockup => mockup.side === side && mockup.color.name === this._selectColor.name);
+        const product = this.getProductByType(this._selectType);
+        if (!product) return null;
+
+        const mockup = product.mockups.find(
+            mockup => mockup.side === side && mockup.color.name === this._selectColor.name
+        );
 
         return mockup ? mockup.url : null;
     }
@@ -2262,164 +2394,19 @@ export default class Editor {
     // Методы экспорта
     // ===========================================
 
-    async exportArt(): Promise<{ [side: string]: string }> {
+    async exportArt(withMockup: boolean = true, resolution: number = 1024): Promise<{ [side: string]: string }> {
         const result: { [side: string]: string } = {};
+        const sidesWithLayers = this.getSidesWithLayers();
 
-        // Получаем все стороны, для которых есть хотя бы один слой
-        const allSidesWithLayers = [...new Set(this.layouts.map(layout => layout.view))];
-
-        // Сортируем так, чтобы front был первым, если он есть
-        const sidesWithLayers = allSidesWithLayers.sort((a, b) => {
-            if (a === 'front') return -1;  // front в начало
-            if (b === 'front') return 1;   // front в начало
-            return 0;  // остальные в исходном порядке
-        });
-
-        console.debug('[export] Найдены стороны с слоями:', sidesWithLayers, '(front первый)');
+        console.debug('[export] Найдены стороны с слоями:', sidesWithLayers, '(front первый)', withMockup ? 'с мокапом' : 'без мокапа', `разрешение: ${resolution}px`);
 
         for (const side of sidesWithLayers) {
             try {
-                // Находим canvas'ы для этой стороны
-                const editableCanvas = this.canvases.find(c => (c as any).side === side);
-                const layersCanvas = this.layersCanvases.find(c => (c as any).side === side);
-
-                if (!editableCanvas) {
-                    console.warn(`[export] Canvas для стороны ${side} не найден`);
-                    continue;
+                const exportedSide = await this.exportSide(side as SideEnum, withMockup, resolution);
+                if (exportedSide) {
+                    result[side] = exportedSide;
+                    console.debug(`[export] Сторона ${side} успешно экспортирована`);
                 }
-
-                console.debug(`[export] Экспортируем сторону ${side} с мокапом...`);
-
-                // Загружаем мокап для текущей стороны и цвета
-                const mockupUrl = this.getMockupUrl(side as SideEnum);
-                if (!mockupUrl) {
-                    console.warn(`[export] Мокап для стороны ${side} не найден`);
-                    continue;
-                }
-
-                const mockupImg = await this.loadImage(mockupUrl);
-                console.debug(`[export] Загружен мокап для ${side}: ${mockupUrl}`);
-
-                // Создаем временный canvas фиксированного размера 2048x2048 (высокое качество)
-                const exportSize = 1024;
-                const tempCanvas = document.createElement('canvas');
-                const ctx = tempCanvas.getContext('2d')!;
-
-                tempCanvas.width = exportSize;
-                tempCanvas.height = exportSize;
-
-                // Вычисляем масштаб для мокапа (вписываем в квадрат 1024x1024)
-                const mockupScale = Math.min(exportSize / mockupImg.width, exportSize / mockupImg.height);
-                const scaledMockupWidth = mockupImg.width * mockupScale;
-                const scaledMockupHeight = mockupImg.height * mockupScale;
-                const mockupX = (exportSize - scaledMockupWidth) / 2;
-                const mockupY = (exportSize - scaledMockupHeight) / 2;
-
-                // Рисуем мокап как фон (центрируем)
-                ctx.drawImage(mockupImg, mockupX, mockupY, scaledMockupWidth, scaledMockupHeight);
-                console.debug(`[export] Нарисован мокап как фон для ${side} (${scaledMockupWidth}x${scaledMockupHeight})`);
-
-                // Множитель для увеличения качества (максимальное качество)
-                const qualityMultiplier = 10;
-
-                // Вычисляем масштаб для наложения дизайна
-                const baseWidth = (editableCanvas as any).getWidth();
-                const baseHeight = (editableCanvas as any).getHeight();
-                const scaleX = scaledMockupWidth / baseWidth;
-                const scaleY = scaledMockupHeight / baseHeight;
-
-                // Создаем временный canvas для объединения всех слоёв дизайна (увеличенного размера)
-                const designCanvas = document.createElement('canvas');
-                const designCtx = designCanvas.getContext('2d')!;
-                designCanvas.width = baseWidth * qualityMultiplier;
-                designCanvas.height = baseHeight * qualityMultiplier;
-
-                // Добавляем статические слои
-                if (layersCanvas) {
-                    try {
-                        const layersDataUrl = (layersCanvas as any).toDataURL({
-                            format: 'png',
-                            multiplier: 10,  // Максимальное качество экспорта
-                            quality: 1.0
-                        });
-
-                        const emptyDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
-                        if (layersDataUrl !== emptyDataUrl && layersDataUrl.length > emptyDataUrl.length) {
-                            const layersImg = await this.loadImage(layersDataUrl);
-                            designCtx.drawImage(layersImg, 0, 0, designCanvas.width, designCanvas.height);
-                            console.debug(`[export] Добавлены статические слои для ${side}`);
-                        }
-                    } catch (error) {
-                        console.warn(`[export] Ошибка экспорта статических слоев для ${side}:`, error);
-                    }
-                }
-
-                // Добавляем редактируемые объекты БЕЗ границ и служебных элементов
-                try {
-                    const tempEditableCanvas = new fabric.StaticCanvas(null, {
-                        width: baseWidth,
-                        height: baseHeight,
-                        backgroundColor: 'transparent'
-                    });
-
-                    // Применяем clipPath если он существует
-                    if ((editableCanvas as any).clipPath) {
-                        const clonedClip = await new Promise<any>((resolve) => {
-                            (editableCanvas as any).clipPath!.clone((cloned: any) => resolve(cloned));
-                        });
-                        tempEditableCanvas.clipPath = clonedClip;
-                        console.debug(`[export] Применён clipPath для экспорта стороны ${side}`);
-                    }
-
-                    // Копируем все объекты кроме служебных
-                    const allObjects = (editableCanvas as any).getObjects();
-                    const designObjects = allObjects.filter((obj: any) => {
-                        const objName = obj.name;
-                        return objName !== "area:border" &&
-                            objName !== "area:clip" &&
-                            objName !== "guideline" &&
-                            objName !== "guideline:vertical" &&
-                            objName !== "guideline:horizontal";
-                    });
-
-                    for (const obj of designObjects) {
-                        const clonedObj = await new Promise<any>((resolve) => {
-                            obj.clone((cloned: any) => resolve(cloned));
-                        });
-                        tempEditableCanvas.add(clonedObj);
-                    }
-
-                    const designDataUrl = tempEditableCanvas.toDataURL({
-                        format: 'png',
-                        multiplier: 10,  // Максимальное качество экспорта
-                        quality: 1.0
-                    });
-
-                    const emptyDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
-                    if (designDataUrl !== emptyDataUrl && designDataUrl.length > emptyDataUrl.length) {
-                        const designImg = await this.loadImage(designDataUrl);
-                        designCtx.drawImage(designImg, 0, 0, designCanvas.width, designCanvas.height);
-                        console.debug(`[export] Добавлены объекты дизайна без границ для ${side}`);
-                    }
-
-                    // Очищаем временный canvas
-                    tempEditableCanvas.dispose();
-                } catch (error) {
-                    console.warn(`[export] Ошибка создания дизайна без границ для ${side}:`, error);
-                }
-
-                // Накладываем объединенный дизайн поверх мокапа с правильным масштабом и позицией
-                // designCanvas увеличен в qualityMultiplier раз, поэтому рисуем с указанием целевого размера
-                ctx.drawImage(
-                    designCanvas,
-                    0, 0, designCanvas.width, designCanvas.height,  // Исходный размер
-                    mockupX, mockupY, scaledMockupWidth, scaledMockupHeight  // Целевой размер
-                );
-
-                console.debug(`[export] Наложен дизайн на мокап для ${side}`);
-
-                result[side] = tempCanvas.toDataURL('image/png', 1.0);
-                console.debug(`[export] Сторона ${side} успешно экспортирована`);
             } catch (error) {
                 console.error(`[export] Ошибка при экспорте стороны ${side}:`, error);
             }
@@ -2427,6 +2414,298 @@ export default class Editor {
 
         console.debug('[export] Экспорт завершен, стороны:', Object.keys(result));
         return result;
+    }
+
+    // Получение сторон с слоями, отсортированных (front первый)
+    private getSidesWithLayers(): string[] {
+        const allSidesWithLayers = [...new Set(this.layouts.map(layout => layout.view))];
+
+        return allSidesWithLayers.sort((a, b) => {
+            if (a === 'front') return -1;
+            if (b === 'front') return 1;
+            return 0;
+        });
+    }
+
+    // Экспорт одной стороны
+    private async exportSide(side: SideEnum, withMockup: boolean = true, resolution: number = 1024): Promise<string | null> {
+        const canvases = this.getCanvasesForSide(side);
+        if (!canvases.editableCanvas) {
+            console.warn(`[export] Canvas для стороны ${side} не найден`);
+            return null;
+        }
+
+        // ВАЖНО: Убеждаемся, что все слои для этой стороны добавлены на canvas
+        // Это необходимо, если пользователь не переключался на эту сторону
+        this.updateLayoutsForSide(side);
+
+        console.debug(`[export] Экспортируем сторону ${side}${withMockup ? ' с мокапом' : ' без мокапа'} (${resolution}px)...`);
+
+        // Если экспорт без мокапа - возвращаем дизайн обрезанный по clipPath
+        if (!withMockup) {
+            const croppedCanvas = await this.exportDesignWithClipPath(
+                canvases.editableCanvas,
+                canvases.layersCanvas,
+                side,
+                resolution
+            );
+            console.debug(`[export] Экспортирован чистый дизайн для ${side} (обрезан по clipPath)`);
+            return croppedCanvas.toDataURL('image/png', 1.0);
+        }
+
+        // Экспорт с мокапом
+        const mockupImg = await this.loadMockupForSide(side);
+        if (!mockupImg) return null;
+
+        const { canvas: tempCanvas, ctx, mockupDimensions } = this.createExportCanvas(resolution, mockupImg);
+
+        const designCanvas = await this.createDesignCanvas(
+            canvases.editableCanvas,
+            canvases.layersCanvas,
+            side
+        );
+
+        // Накладываем дизайн на мокап
+        ctx.drawImage(
+            designCanvas,
+            0, 0, designCanvas.width, designCanvas.height,
+            mockupDimensions.x, mockupDimensions.y,
+            mockupDimensions.width, mockupDimensions.height
+        );
+
+        console.debug(`[export] Наложен дизайн на мокап для ${side}`);
+        return tempCanvas.toDataURL('image/png', 1.0);
+    }
+
+    // Получение canvas для стороны
+    private getCanvasesForSide(side: SideEnum): {
+        editableCanvas: fabric.Canvas | undefined,
+        layersCanvas: fabric.StaticCanvas | undefined
+    } {
+        return {
+            editableCanvas: this.canvases.find(c => (c as any).side === side),
+            layersCanvas: this.layersCanvases.find(c => (c as any).side === side)
+        };
+    }
+
+    // Загрузка мокапа для стороны
+    private async loadMockupForSide(side: SideEnum): Promise<HTMLImageElement | null> {
+        const mockupUrl = this.getMockupUrl(side);
+        if (!mockupUrl) {
+            console.warn(`[export] Мокап для стороны ${side} не найден`);
+            return null;
+        }
+
+        const mockupImg = await this.loadImage(mockupUrl);
+        console.debug(`[export] Загружен мокап для ${side}: ${mockupUrl}`);
+        return mockupImg;
+    }
+
+    // Создание canvas для экспорта с мокапом
+    private createExportCanvas(exportSize: number, mockupImg: HTMLImageElement): {
+        canvas: HTMLCanvasElement,
+        ctx: CanvasRenderingContext2D,
+        mockupDimensions: { x: number, y: number, width: number, height: number }
+    } {
+        const tempCanvas = document.createElement('canvas');
+        const ctx = tempCanvas.getContext('2d')!;
+
+        tempCanvas.width = exportSize;
+        tempCanvas.height = exportSize;
+
+        // Вычисляем масштаб для мокапа
+        const mockupScale = Math.min(exportSize / mockupImg.width, exportSize / mockupImg.height);
+        const scaledMockupWidth = mockupImg.width * mockupScale;
+        const scaledMockupHeight = mockupImg.height * mockupScale;
+        const mockupX = (exportSize - scaledMockupWidth) / 2;
+        const mockupY = (exportSize - scaledMockupHeight) / 2;
+
+        // Рисуем мокап как фон
+        ctx.drawImage(mockupImg, mockupX, mockupY, scaledMockupWidth, scaledMockupHeight);
+        console.debug(`[export] Нарисован мокап как фон (${scaledMockupWidth}x${scaledMockupHeight})`);
+
+        return {
+            canvas: tempCanvas,
+            ctx,
+            mockupDimensions: {
+                x: mockupX,
+                y: mockupY,
+                width: scaledMockupWidth,
+                height: scaledMockupHeight
+            }
+        };
+    }
+
+    // Создание canvas с дизайном
+    private async createDesignCanvas(
+        editableCanvas: fabric.Canvas,
+        layersCanvas: fabric.StaticCanvas | undefined,
+        side: SideEnum
+    ): Promise<HTMLCanvasElement> {
+        const qualityMultiplier = 10;
+        const baseWidth = (editableCanvas as any).getWidth();
+        const baseHeight = (editableCanvas as any).getHeight();
+
+        const designCanvas = document.createElement('canvas');
+        const designCtx = designCanvas.getContext('2d')!;
+        designCanvas.width = baseWidth * qualityMultiplier;
+        designCanvas.height = baseHeight * qualityMultiplier;
+
+        // Добавляем статические слои
+        await this.addStaticLayersToCanvas(layersCanvas, designCtx, designCanvas, side);
+
+        // Добавляем редактируемые объекты
+        await this.addEditableObjectsToCanvas(editableCanvas, designCtx, designCanvas, baseWidth, baseHeight, side);
+
+        return designCanvas;
+    }
+
+    // Добавление статических слоев на canvas
+    private async addStaticLayersToCanvas(
+        layersCanvas: fabric.StaticCanvas | undefined,
+        ctx: CanvasRenderingContext2D,
+        canvas: HTMLCanvasElement,
+        side: SideEnum
+    ): Promise<void> {
+        if (!layersCanvas) return;
+
+        try {
+            const layersDataUrl = (layersCanvas as any).toDataURL({
+                format: 'png',
+                multiplier: 10,
+                quality: 1.0
+            });
+
+            const emptyDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+            if (layersDataUrl !== emptyDataUrl && layersDataUrl.length > emptyDataUrl.length) {
+                const layersImg = await this.loadImage(layersDataUrl);
+                ctx.drawImage(layersImg, 0, 0, canvas.width, canvas.height);
+                console.debug(`[export] Добавлены статические слои для ${side}`);
+            }
+        } catch (error) {
+            console.warn(`[export] Ошибка экспорта статических слоев для ${side}:`, error);
+        }
+    }
+
+    // Добавление редактируемых объектов на canvas
+    private async addEditableObjectsToCanvas(
+        editableCanvas: fabric.Canvas,
+        ctx: CanvasRenderingContext2D,
+        canvas: HTMLCanvasElement,
+        baseWidth: number,
+        baseHeight: number,
+        side: SideEnum
+    ): Promise<void> {
+        try {
+            const tempEditableCanvas = new fabric.StaticCanvas(null, {
+                width: baseWidth,
+                height: baseHeight,
+                backgroundColor: 'transparent'
+            });
+
+            // Применяем clipPath
+            if ((editableCanvas as any).clipPath) {
+                const clonedClip = await new Promise<any>((resolve) => {
+                    (editableCanvas as any).clipPath!.clone((cloned: any) => resolve(cloned));
+                });
+                tempEditableCanvas.clipPath = clonedClip;
+                console.debug(`[export] Применён clipPath для экспорта стороны ${side}`);
+            }
+
+            // Копируем объекты дизайна (без служебных)
+            const designObjects = this.filterDesignObjects((editableCanvas as any).getObjects());
+
+            for (const obj of designObjects) {
+                const clonedObj = await new Promise<any>((resolve) => {
+                    obj.clone((cloned: any) => resolve(cloned));
+                });
+                tempEditableCanvas.add(clonedObj);
+            }
+
+            const designDataUrl = tempEditableCanvas.toDataURL({
+                format: 'png',
+                multiplier: 10,
+                quality: 1.0
+            });
+
+            const emptyDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+            if (designDataUrl !== emptyDataUrl && designDataUrl.length > emptyDataUrl.length) {
+                const designImg = await this.loadImage(designDataUrl);
+                ctx.drawImage(designImg, 0, 0, canvas.width, canvas.height);
+                console.debug(`[export] Добавлены объекты дизайна без границ для ${side}`);
+            }
+
+            tempEditableCanvas.dispose();
+        } catch (error) {
+            console.warn(`[export] Ошибка создания дизайна без границ для ${side}:`, error);
+        }
+    }
+
+    // Фильтрация объектов дизайна (без служебных элементов)
+    private filterDesignObjects(allObjects: any[]): any[] {
+        const serviceObjectNames = new Set([
+            "area:border",
+            "area:clip",
+            "guideline",
+            "guideline:vertical",
+            "guideline:horizontal"
+        ]);
+
+        return allObjects.filter((obj: any) => !serviceObjectNames.has(obj.name));
+    }
+
+    // Экспорт дизайна с обрезкой по clipPath
+    private async exportDesignWithClipPath(
+        editableCanvas: fabric.Canvas,
+        layersCanvas: fabric.StaticCanvas | undefined,
+        side: SideEnum,
+        resolution: number
+    ): Promise<HTMLCanvasElement> {
+        const qualityMultiplier = 10;
+
+        // Получаем clipPath (область печати)
+        const clipPath = (editableCanvas as any).clipPath;
+        if (!clipPath) {
+            console.warn('[export] clipPath не найден, экспортируем весь canvas');
+            return await this.createDesignCanvas(editableCanvas, layersCanvas, side);
+        }
+
+        const clipWidth = clipPath.width;
+        const clipHeight = clipPath.height;
+        const clipLeft = clipPath.left;
+        const clipTop = clipPath.top;
+
+        console.debug(`[export] clipPath: ${clipWidth}x${clipHeight} at (${clipLeft}, ${clipTop})`);
+
+        // Создаем полный дизайн
+        const fullDesignCanvas = await this.createDesignCanvas(editableCanvas, layersCanvas, side);
+
+        // Вычисляем масштаб для желаемого разрешения
+        const scale = resolution / Math.max(clipWidth, clipHeight);
+
+        // Создаем canvas для обрезанного изображения
+        const croppedCanvas = document.createElement('canvas');
+        croppedCanvas.width = clipWidth * scale;
+        croppedCanvas.height = clipHeight * scale;
+        const ctx = croppedCanvas.getContext('2d')!;
+
+        // Рисуем только область clipPath
+        // fullDesignCanvas уже увеличен в qualityMultiplier раз
+        const sourceScale = qualityMultiplier;
+        ctx.drawImage(
+            fullDesignCanvas,
+            clipLeft * sourceScale,           // источник X
+            clipTop * sourceScale,            // источник Y
+            clipWidth * sourceScale,          // ширина источника
+            clipHeight * sourceScale,         // высота источника
+            0,                                // назначение X
+            0,                                // назначение Y
+            croppedCanvas.width,              // ширина назначения
+            croppedCanvas.height              // высота назначения
+        );
+
+        console.debug(`[export] Дизайн обрезан по clipPath: ${croppedCanvas.width}x${croppedCanvas.height}px`);
+        return croppedCanvas;
     }
 
     private async uploadDesignToServer(designs: { [key: string]: string }): Promise<{ [key: string]: string } | null> {

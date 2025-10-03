@@ -38,26 +38,14 @@ export class CardForm {
             console.debug('[form] [input]', e);
             console.debug((e.target as HTMLInputElement)?.value, "|", (e.target as HTMLInputElement)?.name);
 
-            if ((e.target as HTMLInputElement)?.name == "address") {
-                if ((e.target as HTMLInputElement)?.value.length > 3) {
-                    const data = await this.searchAddress((e.target as HTMLInputElement)?.value);
-                    console.debug('[form] [input] address', data);
-                }
+            if ((e.target as HTMLInputElement)?.name == "term_variant") {
+                this.actionsStates.set("term_variant", {
+                    value: (e.target as HTMLInputElement)?.value,
+                    sum: 0
+                });
+                this.applyActions();
             }
         })
-    }
-
-    async searchAddress(address: string) {
-        const response = await fetch("https://b2b.taxi.tst.yandex.net/api/b2b/platform/location/detect", {
-            method: "POST",
-            body: JSON.stringify({
-                location: address,
-            }),
-        });
-
-        const data = await response.json();
-
-        return data;
     }
 
     initRules() {

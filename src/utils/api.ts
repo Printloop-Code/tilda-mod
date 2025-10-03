@@ -3,7 +3,23 @@ import { Layout } from '../models/Layout';
 import { CreateProductProps } from '../types';
 import { productConfigs } from '../config/products';
 
-export async function generateImage(prompt: string, shirtColor: string, image?: string, withAi: boolean = false, layoutId?: Layout['id']) {
+type GenerateImageProps = {
+    prompt: string;
+    shirtColor: string;
+    image?: string | null | undefined;
+    withAi: boolean;
+    layoutId: Layout['id'] | null | undefined;
+    isNew?: boolean;
+}
+
+export async function generateImage({
+    prompt,
+    shirtColor,
+    image,
+    withAi,
+    layoutId,
+    isNew = true,
+}: GenerateImageProps): Promise<string> {
     const tempStorageManager = new EditorStorageManager();
     const userId = await (tempStorageManager as any).getUserId();
 
@@ -15,6 +31,9 @@ export async function generateImage(prompt: string, shirtColor: string, image?: 
     formData.set('printSize', "big");
     formData.set('transferType', '');
     formData.set('request_type', 'generate');
+
+    if (layoutId)
+        formData.set('layoutId', layoutId);
 
     if (image) {
         console.debug('[generate image]', image);
@@ -38,9 +57,8 @@ export async function generateImage(prompt: string, shirtColor: string, image?: 
         formData.set('transferType', withAi ? "ai" : "no-ai");
     }
 
-    if (layoutId) {
+    if (!isNew) {
         formData.set('request_type', 'edit');
-        formData.set('layoutId', layoutId);
     }
 
     const response = await fetch("https://primary-production-654c.up.railway.app/webhook/request", {

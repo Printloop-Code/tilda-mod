@@ -5,8 +5,8 @@ export const productConfigs: Product[] = [
         type: 'tshirt',
         productName: 'Футболка',
         sizes: ["S", "M", "L", "XL", "2XL"],
-        price: 1990, // Цена за односторонний принт
-        doubleSidedPrice: 2490, // Цена за двухсторонний принт
+        price: 1290, // Цена за односторонний принт
+        doubleSidedPrice: 1590, // Цена за двухсторонний принт
         printConfig: [
             {
                 side: 'front',
@@ -58,8 +58,8 @@ export const productConfigs: Product[] = [
         type: 'hoodie',
         productName: 'Толстовка',
         sizes: ["S", "M", "L", "XL", "2XL"],
-        price: 2490, // Цена за односторонний принт
-        doubleSidedPrice: 2990, // Цена за двухсторонний принт
+        price: 2590, // Цена за односторонний принт
+        doubleSidedPrice: 2890, // Цена за двухсторонний принт
         printConfig: [
             {
                 side: 'front',
