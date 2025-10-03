@@ -192,5 +192,6 @@ export type CreateProductProps = {
     color: Color;
     sides: { image_url: string }[];
     productType: Product['type'];
+    article: number;
 }
 

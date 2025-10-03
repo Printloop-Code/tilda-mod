@@ -76,7 +76,7 @@ export async function generateImage({
     return responseData.image_url || responseData.image;
 }
 
-export function createProduct({ quantity, name, size, color, sides, productType }: CreateProductProps) {
+export function createProduct({ quantity, name, size, color, sides, productType, article }: CreateProductProps) {
     const productId = (Math.random() + 1).toString(36).substring(7) + "_" + Date.now();
 
     // Получаем конфигурацию продукта для определения цены
@@ -94,6 +94,7 @@ export function createProduct({ quantity, name, size, color, sides, productType 
         options: [
             { option: 'Дизайн', variant: `<a target="_blank" href="${sides[0]?.image_url}" target="_blank">${sides[0]?.image_url.slice(-10)}</a>` },
             (sides.length > 1) && { option: 'Дизайн', variant: `<a target="_blank" href="${sides[1]?.image_url}" target="_blank">${sides[1]?.image_url.slice(-10)}</a>` },
+            { option: 'Артикул', variant: article },
             { option: 'Размер', variant: size },
             { option: 'Цвет', variant: color.name },
             { option: 'Принт', variant: sides.length == 1 ? 'Односторонний' : 'Двухсторонний' },

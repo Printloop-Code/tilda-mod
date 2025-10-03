@@ -1375,6 +1375,7 @@ export default class Editor {
                 // НОВОЕ: Устанавливаем флаг и показываем анимацию
                 this.isAddingToCart = true;
                 this.setAddToCartButtonLoading(true, 'Добавление...');
+                const article = Math.floor(Math.random() * (99999999 - 999999 + 1)) + 999999;
 
                 console.debug('[order] Начало создания заказа');
 
@@ -1426,6 +1427,7 @@ export default class Editor {
                 const formData = new FormData();
                 formData.append("layouts", JSON.stringify(layouts));
                 formData.append("user_id", userId);
+                formData.append("art", article.toString());
 
                 // ИСПРАВЛЕНИЕ: Добавлен await для webhook
                 await fetch(API_ENDPOINTS.WEBHOOK_CART, {
@@ -1440,6 +1442,7 @@ export default class Editor {
                     color: this._selectColor,
                     sides,
                     productType: this._selectType,
+                    article
                 });
 
                 console.debug('[order] Заказ успешно создан');
