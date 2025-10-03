@@ -34,7 +34,28 @@ window.onload = () => {
                 actions: [
                     {
                         value: "1-2 дня (+500р на изделие)",
-                        sum: 500
+                        sum: 500,
+                        quantityType: 'perProduct' // Цена за каждое изделие
+                    },
+                    {
+                        value: "3-5 дней (стандарт)",
+                        sum: 0,
+                        quantityType: 'perProduct'
+                    }
+                ]
+            },
+            {
+                variable: "delivery",
+                actions: [
+                    {
+                        value: "Доставка по Москве",
+                        sum: 300,
+                        quantityType: 'fixed' // Фиксированная цена за доставку (1 шт)
+                    },
+                    {
+                        value: "Доставка по России",
+                        sum: 500,
+                        quantityType: 'fixed'
                     }
                 ]
             }

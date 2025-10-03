@@ -170,6 +170,8 @@ export type RuleCart = {
     actions: {
         value: string;
         sum?: number;
+        quantityType?: 'fixed' | 'perProduct'; // fixed = 1 шт, perProduct = по количеству товаров
+        quantity?: number; // конкретное количество (если не указано, используется quantityType)
     }[];
 }
 

@@ -3,6 +3,11 @@ import { Layout } from '../models/Layout';
 import { CreateProductProps } from '../types';
 import { productConfigs } from '../config/products';
 
+// API endpoints
+const API_ENDPOINTS = {
+    WEBHOOK_REQUEST: 'https://primary-production-654c.up.railway.app/webhook/request',
+} as const;
+
 type GenerateImageProps = {
     prompt: string;
     shirtColor: string;
@@ -61,7 +66,7 @@ export async function generateImage({
         formData.set('request_type', 'edit');
     }
 
-    const response = await fetch("https://primary-production-654c.up.railway.app/webhook/request", {
+    const response = await fetch(API_ENDPOINTS.WEBHOOK_REQUEST, {
         method: "POST",
         body: formData,
     });

@@ -15,6 +15,13 @@ const CONSTANTS = {
     LOADING_INTERVAL_MS: 100,
 } as const;
 
+// API endpoints
+const API_ENDPOINTS = {
+    WEBHOOK_CART: 'https://primary-production-654c.up.railway.app/webhook/cart',
+    UPLOAD_IMAGE: 'https://1804633-image.fl.gridesk.ru/upload',
+    WEBHOOK_REQUEST: 'https://primary-production-654c.up.railway.app/webhook/request',
+} as const;
+
 // Типы событий редактора
 export enum EditorEventType {
     MOCKUP_LOADING = 'mockup-loading',
@@ -113,6 +120,8 @@ export default class Editor {
 
     // Прочее
     private isLoading: boolean = true;
+    private isAddingToCart: boolean = false; // НОВОЕ: Флаг для блокировки повторных добавлений в корзину
+    private isGenerating: boolean = false; // НОВОЕ: Флаг для блокировки повторных генераций
     private loadingTime: number = 0;
     private loadingInterval: NodeJS.Timeout | null = null;
 
@@ -1254,30 +1263,87 @@ export default class Editor {
         if (!this.editorAddOrderButton) return;
 
         this.editorAddOrderButton.style.cursor = 'pointer';
+
+        // ИСПРАВЛЕНИЕ: Блокировать кнопку во время генерации
+        this.events.on(EditorEventType.MOCKUP_LOADING, (isLoading) => {
+            if (this.editorAddOrderButton) {
+                if (isLoading) {
+                    // Блокируем кнопку
+                    (this.editorAddOrderButton as HTMLElement).style.opacity = '0.5';
+                    (this.editorAddOrderButton as HTMLElement).style.cursor = 'not-allowed';
+                    (this.editorAddOrderButton as HTMLElement).style.pointerEvents = 'none';
+                    console.debug('[order] Кнопка заблокирована (идет генерация)');
+                } else {
+                    // Разблокируем кнопку
+                    (this.editorAddOrderButton as HTMLElement).style.opacity = '1';
+                    (this.editorAddOrderButton as HTMLElement).style.cursor = 'pointer';
+                    (this.editorAddOrderButton as HTMLElement).style.pointerEvents = 'auto';
+                    console.debug('[order] Кнопка разблокирована');
+                }
+            }
+        });
+
         this.editorAddOrderButton.onclick = async () => {
+            // НОВОЕ: Защита от повторных нажатий
+            if (this.isAddingToCart) {
+                console.warn('[order] Процесс добавления уже идет, игнорируем повторное нажатие');
+                return;
+            }
+
             if (this.getSum() === 0) {
                 alert('Для добавления заказа продукт не может быть пустым');
                 return;
             }
 
+            // ИСПРАВЛЕНИЕ: Проверка что дизайн загружен
+            if (this.layouts.length === 0) {
+                alert('Пожалуйста, дождитесь завершения генерации дизайна');
+                console.warn('[order] Попытка добавить в корзину без дизайна');
+                return;
+            }
+
+            // Сохраняем оригинальный текст кнопки
+            let buttonTextElement = this.editorAddOrderButton?.querySelector('.tn-atom') as HTMLElement;
+            if (!buttonTextElement) {
+                buttonTextElement = this.editorAddOrderButton?.querySelector('div, span') as HTMLElement;
+            }
+            const originalText = buttonTextElement?.textContent?.trim() || 'Добавить в корзину';
+
             try {
+                // НОВОЕ: Устанавливаем флаг и показываем анимацию
+                this.isAddingToCart = true;
+                this.setAddToCartButtonLoading(true, 'Добавление...');
+
                 console.debug('[order] Начало создания заказа');
 
                 // Экспортируем дизайн со всех сторон
                 const exportedArt = await this.exportArt(true, 512);
                 console.debug('[order] Экспорт дизайна завершен:', Object.keys(exportedArt));
 
+                // Дополнительная проверка после экспорта
+                if (Object.keys(exportedArt).length === 0) {
+                    alert('Ошибка: не удалось экспортировать дизайн. Попробуйте еще раз.');
+                    console.error('[order] Экспорт вернул пустой результат');
+                    return;
+                }
+
                 // Преобразуем в формат для отправки
                 const sides = Object.keys(exportedArt).map(side => ({
                     image_url: exportedArt[side] || '',
                 }));
 
-                // Загружаем изображения на сервер
+                // ОПТИМИЗАЦИЯ: Параллельная загрузка изображений на сервер
                 console.debug('[order] Загрузка изображений на сервер...');
-                for (const side of sides) {
+                const uploadPromises = sides.map(async (side) => {
                     const base64 = side.image_url.split(',')[1]!;
-                    side.image_url = await this.uploadImageToServer(base64);
-                }
+                    const uploadedUrl = await this.uploadImageToServer(base64);
+                    return { side, uploadedUrl };
+                });
+
+                const uploadedSides = await Promise.all(uploadPromises);
+                uploadedSides.forEach(({ side, uploadedUrl }) => {
+                    side.image_url = uploadedUrl;
+                });
                 console.debug('[order] Изображения загружены на сервер');
 
                 // Создаем продукт и добавляем в корзину
@@ -1291,10 +1357,11 @@ export default class Editor {
                 formData.append("layouts", JSON.stringify(layouts));
                 formData.append("user_id", userId);
 
-                fetch("https://primary-production-654c.up.railway.app/webhook/cart", {
+                // ИСПРАВЛЕНИЕ: Добавлен await для webhook
+                await fetch(API_ENDPOINTS.WEBHOOK_CART, {
                     method: "POST",
                     body: formData
-                })
+                });
 
                 createProduct({
                     quantity: this.getQuantity(),
@@ -1306,11 +1373,160 @@ export default class Editor {
                 });
 
                 console.debug('[order] Заказ успешно создан');
+
+                // НОВОЕ: Показываем успешное добавление
+                this.setAddToCartButtonLoading(false, '✓ Добавлено!');
+
+                // Возвращаем оригинальный текст через 2 секунды
+                setTimeout(() => {
+                    this.setAddToCartButtonLoading(false, originalText);
+                }, 2000);
+
             } catch (error) {
                 console.error('[order] Ошибка создания заказа:', error);
                 alert('Ошибка при создании заказа');
+
+                // НОВОЕ: Восстанавливаем кнопку при ошибке
+                this.setAddToCartButtonLoading(false, originalText);
+            } finally {
+                // НОВОЕ: Всегда сбрасываем флаг через небольшую задержку
+                setTimeout(() => {
+                    this.isAddingToCart = false;
+                    console.debug('[order] Флаг isAddingToCart сброшен');
+                }, 2000);
             }
         };
+    }
+
+    /**
+     * НОВОЕ: Вспомогательная функция для анимации кнопки "Добавить в корзину"
+     */
+    private setAddToCartButtonLoading(isLoading: boolean, text?: string): void {
+        if (!this.editorAddOrderButton) return;
+
+        // Добавляем CSS анимацию если её еще нет
+        this.injectPulseAnimation();
+
+        const button = this.editorAddOrderButton as HTMLElement;
+
+        // Пробуем найти текстовый элемент через разные селекторы
+        let buttonTextElement = button.querySelector('.tn-atom') as HTMLElement;
+        if (!buttonTextElement) {
+            // Если .tn-atom не найден, ищем любой текстовый дочерний элемент
+            buttonTextElement = button.querySelector('div, span') as HTMLElement;
+        }
+
+        // Если всё равно не найден, используем саму кнопку
+        const textTarget = buttonTextElement || button;
+
+        if (isLoading) {
+            // Блокируем кнопку
+            button.style.opacity = '0.7';
+            button.style.cursor = 'not-allowed';
+            button.style.pointerEvents = 'none';
+
+            // Меняем текст
+            if (text) {
+                textTarget.textContent = text;
+            }
+
+            // Добавляем анимацию пульсации
+            button.style.animation = 'cartButtonPulse 1.5s ease-in-out infinite';
+
+            console.debug('[order] [animation] Кнопка заблокирована:', text);
+        } else {
+            // Разблокируем кнопку
+            button.style.opacity = '1';
+            button.style.cursor = 'pointer';
+            button.style.pointerEvents = 'auto';
+            button.style.animation = 'none';
+
+            // Меняем текст
+            if (text) {
+                textTarget.textContent = text;
+            }
+
+            console.debug('[order] [animation] Кнопка разблокирована:', text);
+        }
+    }
+
+    /**
+     * НОВОЕ: Добавляет CSS анимацию пульсации в документ
+     */
+    private injectPulseAnimation(): void {
+        // Проверяем, не добавлена ли уже анимация
+        if (document.getElementById('cart-button-pulse-animation')) {
+            return;
+        }
+
+        const style = document.createElement('style');
+        style.id = 'cart-button-pulse-animation';
+        style.textContent = `
+            @keyframes cartButtonPulse {
+                0%, 100% {
+                    transform: scale(1);
+                    opacity: 0.7;
+                }
+                50% {
+                    transform: scale(1.02);
+                    opacity: 0.85;
+                }
+            }
+        `;
+        document.head.appendChild(style);
+        console.debug('[animation] CSS анимация пульсации добавлена');
+    }
+
+    /**
+     * НОВОЕ: Вспомогательная функция для анимации кнопки "Сгенерировать"
+     */
+    private setGenerateButtonLoading(isLoading: boolean, text?: string): void {
+        if (!this.formButton) return;
+
+        // Добавляем CSS анимацию если её еще нет
+        this.injectPulseAnimation();
+
+        const button = this.formButton as HTMLElement;
+
+        // Пробуем найти текстовый элемент через разные селекторы
+        let buttonTextElement = button.querySelector('.tn-atom') as HTMLElement;
+        if (!buttonTextElement) {
+            // Если .tn-atom не найден, ищем любой текстовый дочерний элемент
+            buttonTextElement = button.querySelector('div, span') as HTMLElement;
+        }
+
+        // Если всё равно не найден, используем саму кнопку
+        const textTarget = buttonTextElement || button;
+
+        if (isLoading) {
+            // Блокируем кнопку
+            button.style.opacity = '0.7';
+            button.style.cursor = 'not-allowed';
+            button.style.pointerEvents = 'none';
+
+            // Меняем текст
+            if (text) {
+                textTarget.textContent = text;
+            }
+
+            // Добавляем анимацию пульсации
+            button.style.animation = 'cartButtonPulse 1.5s ease-in-out infinite';
+
+            console.debug('[generate] [animation] Кнопка заблокирована:', text);
+        } else {
+            // Разблокируем кнопку
+            button.style.opacity = '1';
+            button.style.cursor = 'pointer';
+            button.style.pointerEvents = 'auto';
+            button.style.animation = 'none';
+
+            // Меняем текст
+            if (text) {
+                textTarget.textContent = text;
+            }
+
+            console.debug('[generate] [animation] Кнопка разблокирована:', text);
+        }
     }
 
     private initUploadImageButton(): void {
@@ -1373,6 +1589,12 @@ export default class Editor {
         const handleClick = async () => {
             console.debug('[form] [button] clicked');
 
+            // НОВОЕ: Защита от повторных генераций
+            if (this.isGenerating) {
+                console.warn('[form] Генерация уже идет, игнорируем повторное нажатие');
+                return;
+            }
+
             const formInput = formBlock.querySelector(`[name="${formInputVariableName}"]`) as HTMLInputElement | HTMLTextAreaElement;
             const prompt = formInput.value;
 
@@ -1386,6 +1608,10 @@ export default class Editor {
             }
 
             console.debug(`[form] [input] prompt: ${prompt}`);
+
+            // НОВОЕ: Устанавливаем флаг и показываем анимацию
+            this.isGenerating = true;
+            this.setGenerateButtonLoading(true, 'Генерация...');
 
             this.emit(EditorEventType.MOCKUP_LOADING, true);
 
@@ -1446,10 +1672,26 @@ export default class Editor {
 
                 // Обновляем список слоёв для удаления подсветки
                 this.showLayoutList();
+
+                // НОВОЕ: Показываем успешную генерацию
+                this.setGenerateButtonLoading(false, '✓ Готово!');
+
+                // Возвращаем оригинальный текст через 2 секунды
+                setTimeout(() => {
+                    this.setGenerateButtonLoading(false, 'Сгенерировать');
+                    this.isGenerating = false;
+                    console.debug('[form] Флаг isGenerating сброшен');
+                }, 2000);
+
             } catch (error) {
                 this.emit(EditorEventType.MOCKUP_LOADING, false);
                 console.error('[form] [input] error', error);
                 alert("Ошибка при генерации изображения");
+
+                // НОВОЕ: Восстанавливаем кнопку при ошибке
+                this.setGenerateButtonLoading(false, 'Сгенерировать');
+                this.isGenerating = false;
+
                 return;
             } finally {
                 if (this.loadedUserImage) {
@@ -1732,7 +1974,7 @@ export default class Editor {
 
     private showAiButtons(): void {
         if (this.editorLoadWithAiButton) {
-            (this.editorLoadWithAiButton.parentElement?.parentElement?.parentElement as HTMLElement).style.display = 'table';
+            (this.editorLoadWithAiButton.parentElement?.parentElement?.parentElement as HTMLElement).style.display = 'flex';
         }
     }
 
@@ -2242,6 +2484,7 @@ export default class Editor {
                 left: absoluteLeft,
                 top: absoluteTop,
                 name: layout.id,
+                layoutUrl: layout.url, // ИСПРАВЛЕНИЕ: Сохраняем URL для отслеживания изменений
                 scaleX: layout.size,
                 scaleY: layout.size * layout.aspectRatio,
                 angle: layout.angle,
@@ -2285,10 +2528,37 @@ export default class Editor {
             canvas.remove(obj);
         });
 
-        // Добавляем новые объекты
         const layoutsForSide = this.layouts.filter(layout => layout.view === side);
-        const objectsToAdd = layoutsForSide.filter(layout => !objects.find(obj => (obj as any).name === layout.id));
 
+        // ИСПРАВЛЕНИЕ: Проверяем существующие объекты на необходимость обновления
+        const objectsToUpdate: Layout[] = [];
+        const objectsToAdd: Layout[] = [];
+
+        layoutsForSide.forEach(layout => {
+            const existingObj = objects.find(obj => (obj as any).name === layout.id);
+            if (existingObj) {
+                // Проверяем, изменился ли URL изображения (для ImageLayout)
+                if (layout.isImageLayout() && (existingObj as any).layoutUrl !== layout.url) {
+                    console.debug(`[canvas] Layout ${layout.id} изменился, требуется обновление`);
+                    objectsToUpdate.push(layout);
+                }
+            } else {
+                objectsToAdd.push(layout);
+            }
+        });
+
+        // ИСПРАВЛЕНИЕ: Удаляем и заново добавляем измененные объекты
+        objectsToUpdate.forEach(layout => {
+            const existingObj = objects.find(obj => (obj as any).name === layout.id);
+            if (existingObj) {
+                console.debug(`[canvas] Удаляем старый объект для обновления: ${layout.id}`);
+                canvas.remove(existingObj);
+            }
+            console.debug(`[canvas] Добавляем обновленный объект: ${layout.id}`);
+            this.addLayoutToCanvas(layout);
+        });
+
+        // Добавляем новые объекты
         objectsToAdd.forEach(layout => {
             this.addLayoutToCanvas(layout);
         });
@@ -2358,7 +2628,7 @@ export default class Editor {
 
         const userId = await this.storageManager.getUserId();
 
-        const response = await fetch('https://1804633-image.fl.gridesk.ru/upload', {
+        const response = await fetch(API_ENDPOINTS.UPLOAD_IMAGE, {
             method: 'POST',
             body: JSON.stringify({ image: base64, user_id: userId }),
             headers: {
@@ -2400,19 +2670,30 @@ export default class Editor {
 
         console.debug('[export] Найдены стороны с слоями:', sidesWithLayers, '(front первый)', withMockup ? 'с мокапом' : 'без мокапа', `разрешение: ${resolution}px`);
 
-        for (const side of sidesWithLayers) {
+        // ОПТИМИЗАЦИЯ: Параллельный экспорт всех сторон вместо последовательного
+        const exportPromises = sidesWithLayers.map(async (side) => {
             try {
                 const exportedSide = await this.exportSide(side as SideEnum, withMockup, resolution);
                 if (exportedSide) {
-                    result[side] = exportedSide;
                     console.debug(`[export] Сторона ${side} успешно экспортирована`);
+                    return { side, data: exportedSide };
                 }
             } catch (error) {
                 console.error(`[export] Ошибка при экспорте стороны ${side}:`, error);
             }
-        }
+            return null;
+        });
 
-        console.debug('[export] Экспорт завершен, стороны:', Object.keys(result));
+        const exportedSides = await Promise.all(exportPromises);
+
+        // Формируем результат из успешно экспортированных сторон
+        exportedSides.forEach(item => {
+            if (item) {
+                result[item.side] = item.data;
+            }
+        });
+
+        console.debug(`[export] Экспорт завершен для ${Object.keys(result).length} сторон`);
         return result;
     }
 
