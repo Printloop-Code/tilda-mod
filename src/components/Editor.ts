@@ -402,6 +402,15 @@ export default class Editor {
         if (this.editorLayoutsListBlock) {
             this.showLayoutList();
         }
+
+        if (this.editorUploadCancelButton) {
+            this.editorUploadCancelButton.style.cursor = 'pointer';
+            this.editorUploadCancelButton.onclick = () => {
+                console.debug('[upload image button] cancel button clicked');
+                // Полностью отменяем редактирование
+                this.resetUserUploadImage();
+            };
+        }
     }
 
     // Вспомогательный метод для получения обязательных DOM элементов
@@ -2115,15 +2124,7 @@ export default class Editor {
         }
 
         this.loadedUserImage = null;
-
-        if (this.editorUploadCancelButton) {
-            this.editorUploadCancelButton.style.cursor = 'pointer';
-            this.editorUploadCancelButton.onclick = () => {
-                console.debug('[upload image button] cancel button clicked');
-                // Полностью отменяем редактирование
-                this.cancelEditLayout();
-            };
-        }
+        this.cancelEditLayout();
     }
 
     changeLoadWithAi(value: boolean = false): void {

@@ -295,6 +295,9 @@ export class CardForm {
         } else {
             console.debug('[form] [cleanupCartOnInit] Нет товаров для удаления');
         }
+
+        // Скрываем счетчики количества для всех товаров из правил после инициализации
+        await this.hideQuantityControlsForRuleProducts();
     }
 
     /**
@@ -377,6 +380,8 @@ export class CardForm {
                             lastMainProductsQty = newQty;
                             this.updateRuleProductsQuantity();
                         }
+                        // Скрываем счетчики для товаров из правил после любых изменений корзины
+                        this.hideQuantityControlsForRuleProducts();
                     }, DELAYS.CART_UPDATE);
                 });
 
@@ -443,6 +448,50 @@ export class CardForm {
         } else {
             window.addEventListener('load', setupLocalStorageInterceptor);
         }
+
+        // Механизм 4: Отслеживание открытия корзины через hashchange
+        window.addEventListener('hashchange', () => {
+            const hash = window.location.hash;
+            if (hash === '#opencart') {
+                console.debug('[form] [cartObserver] Корзина открывается через #opencart');
+                // Ждем, пока корзина полностью отрисуется
+                setTimeout(() => {
+                    this.hideQuantityControlsForRuleProducts();
+                }, DELAYS.CART_UPDATE + 200);
+            }
+        });
+
+        // Механизм 5: Наблюдение за показом корзины через MutationObserver на классе корзины
+        const observeCartVisibility = () => {
+            const cartWindow = document.querySelector('.t706__cartwin');
+            if (cartWindow) {
+                const visibilityObserver = new MutationObserver((mutations) => {
+                    mutations.forEach((mutation) => {
+                        if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+                            const element = mutation.target as HTMLElement;
+                            if (element.classList.contains('t706__cartwin_showed')) {
+                                console.debug('[form] [cartObserver] Корзина показана (класс t706__cartwin_showed)');
+                                // Ждем, пока корзина полностью отрисуется
+                                setTimeout(() => {
+                                    this.hideQuantityControlsForRuleProducts();
+                                }, DELAYS.CART_UPDATE);
+                            }
+                        }
+                    });
+                });
+
+                visibilityObserver.observe(cartWindow, {
+                    attributes: true,
+                    attributeFilter: ['class']
+                });
+
+                console.debug('[form] [initCartObserver] ✓ Наблюдатель видимости корзины установлен');
+            } else {
+                setTimeout(observeCartVisibility, 1000);
+            }
+        };
+
+        observeCartVisibility();
 
         console.debug('[form] [initCartObserver] ✓ Наблюдатели инициализированы');
     }
@@ -601,6 +650,9 @@ export class CardForm {
         }
 
         console.debug('[form] [updateRuleProductsQuantity] ✓ Обновление завершено');
+
+        // Скрываем счетчики количества для всех товаров из правил
+        await this.hideQuantityControlsForRuleProducts();
     }
 
     /**
@@ -1023,6 +1075,85 @@ export class CardForm {
         }
 
         console.debug('[form] [applyActions] ✓ Применение действий завершено');
+
+        // Скрываем счетчики количества для всех товаров из правил
+        await this.hideQuantityControlsForRuleProducts();
+    }
+
+    // ========================================
+    // СКРЫТИЕ СЧЕТЧИКОВ КОЛИЧЕСТВА ДЛЯ ТОВАРОВ ИЗ ПРАВИЛ
+    // ========================================
+
+    /**
+     * Получает список всех названий товаров из правил
+     * @returns Set с названиями товаров
+     */
+    private getAllRuleProductNames(): Set<string> {
+        const ruleProductNames = new Set<string>();
+
+        // Проходим по всем правилам
+        this.rules.forEach(rule => {
+            // Проходим по всем действиям в каждом правиле
+            rule.actions.forEach(action => {
+                // Добавляем название товара из действия (action.value)
+                if (action.value) {
+                    ruleProductNames.add(action.value.trim());
+                }
+            });
+        });
+
+        console.debug('[form] [hideQuantity] Все товары из правил:', Array.from(ruleProductNames));
+        return ruleProductNames;
+    }
+
+    /**
+     * Скрывает счетчики количества (кнопки +/-) для товаров из правил
+     * 
+     * ЧТО ДЕЛАЕТ:
+     * 1. Получает список всех товаров из правил
+     * 2. Находит эти товары в DOM корзины
+     * 3. Скрывает блок с кнопками +/- (.t706__product-plusminus)
+     * 
+     * ЗАЧЕМ:
+     * Товары из правил управляются автоматически (количество зависит от основных товаров).
+     * Пользователь не должен иметь возможность менять их количество вручную.
+     */
+    private async hideQuantityControlsForRuleProducts(): Promise<void> {
+        console.debug('[form] [hideQuantity] Начало скрытия счетчиков для товаров из правил');
+
+        // Получаем все названия товаров из правил
+        const ruleProductNames = this.getAllRuleProductNames();
+
+        if (ruleProductNames.size === 0) {
+            console.debug('[form] [hideQuantity] Нет товаров из правил');
+            return;
+        }
+
+        // Ждем, пока корзина отрисуется
+        await CartUtils.wait(DELAYS.DOM_UPDATE);
+
+        // Находим все товары в корзине
+        const productElements = document.querySelectorAll(DOM_SELECTORS.CART_PRODUCT);
+        let hiddenCount = 0;
+
+        productElements.forEach((productElement) => {
+            // Находим название товара
+            const titleElement = productElement.querySelector(DOM_SELECTORS.PRODUCT_TITLE);
+            const productName = titleElement?.textContent?.trim();
+
+            if (productName && ruleProductNames.has(productName)) {
+                // Это товар из правил - скрываем кнопки +/-
+                const plusMinusBlock = productElement.querySelector(DOM_SELECTORS.PRODUCT_PLUSMINUS) as HTMLElement;
+
+                if (plusMinusBlock && plusMinusBlock.style.display !== 'none') {
+                    plusMinusBlock.style.display = 'none';
+                    hiddenCount++;
+                    console.debug(`[form] [hideQuantity] ✓ Скрыты кнопки для товара: "${productName}"`);
+                }
+            }
+        });
+
+        console.debug(`[form] [hideQuantity] ✓ Скрыто счетчиков: ${hiddenCount}`);
     }
 }
 
