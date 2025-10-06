@@ -1450,8 +1450,8 @@ export default class Editor {
                     size: this._selectSize,
                     color: this._selectColor,
                     sides,
-                    productType: this._selectType,
-                    article
+                    article,
+                    price: this.getSum(),
                 });
 
                 console.debug('[order] Заказ успешно создан');

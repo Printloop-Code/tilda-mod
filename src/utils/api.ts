@@ -76,14 +76,10 @@ export async function generateImage({
     return responseData.image_url || responseData.image;
 }
 
-export function createProduct({ quantity, name, size, color, sides, productType, article }: CreateProductProps) {
-    const productId = (Math.random() + 1).toString(36).substring(7) + "_" + Date.now();
+export function createProduct({ quantity, name, size, color, sides, article, price }: CreateProductProps) {
+    const productId = '698341642832_' + Date.now();
 
-    // Получаем конфигурацию продукта для определения цены
-    const productConfig = productConfigs.find(p => p.type === productType);
-    const price = sides.length == 1
-        ? (productConfig?.price || 1990)
-        : (productConfig?.doubleSidedPrice || 2490);
+    const designVariant = sides.length > 1 ? `<a target="_blank" href="${sides[0]?.image_url}" target="_blank">${sides[0]?.image_url.slice(-10)}</a>, <a target="_blank" href="${sides[1]?.image_url}" target="_blank">${sides[1]?.image_url.slice(-10)}</a>` : `<a target="_blank" href="${sides[0]?.image_url}" target="_blank">${sides[0]?.image_url.slice(-10)}</a>`;
 
     const resultProduct = {
         id: productId,
@@ -92,10 +88,9 @@ export function createProduct({ quantity, name, size, color, sides, productType,
         quantity: quantity,
         img: sides[0]?.image_url,
         options: [
-            { option: 'Дизайн', variant: `<a target="_blank" href="${sides[0]?.image_url}" target="_blank">${sides[0]?.image_url.slice(-10)}</a>` },
-            (sides.length > 1) && { option: 'Дизайн', variant: `<a target="_blank" href="${sides[1]?.image_url}" target="_blank">${sides[1]?.image_url.slice(-10)}</a>` },
-            { option: 'Артикул', variant: article },
             { option: 'Размер', variant: size },
+            { option: 'Дизайн', variant: designVariant },
+            { option: 'Артикул', variant: article },
             { option: 'Цвет', variant: color.name },
             { option: 'Принт', variant: sides.length == 1 ? 'Односторонний' : 'Двухсторонний' },
         ]
