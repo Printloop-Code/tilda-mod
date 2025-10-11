@@ -70,6 +70,13 @@ export type Product = {
     doubleSidedPrice: number; // Цена за двухсторонний принт
 }
 
+// API Configuration типы
+export type ApiConfig = {
+    webhookCart: string;      // URL для webhook добавления в корзину
+    uploadImage: string;      // URL для загрузки изображений
+    webhookRequest: string;   // URL для webhook генерации изображений
+}
+
 // Editor типы
 export type EditorState = {
     date: string;
@@ -151,6 +158,7 @@ export type EditorProps = {
         formButtonClass: string;
     }
     productConfigs: Product[];
+    apiConfig: ApiConfig;  // Конфигурация API endpoints
 }
 
 // Popup типы

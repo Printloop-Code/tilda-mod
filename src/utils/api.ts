@@ -1,7 +1,6 @@
 import { EditorStorageManager } from '../managers/EditorStorageManager';
 import { Layout } from '../models/Layout';
 import { CreateProductProps } from '../types';
-import { productConfigs } from '../config/products';
 
 // API endpoints
 const API_ENDPOINTS = {
@@ -101,6 +100,10 @@ export function createProduct({ quantity, name, size, color, sides, article, pri
     if (typeof (window as any).tcart__addProduct === 'function') {
         try {
             (window as any).tcart__addProduct(resultProduct);
+            try {
+                (window as any).ym(103279214, 'reachGoal', 'add_to_cart')
+            }
+            catch (error) { }
         } catch (error) {
             console.error('[cart] Ошибка при добавлении продукта в корзину', error);
         }

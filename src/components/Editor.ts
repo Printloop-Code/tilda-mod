@@ -3,7 +3,7 @@
 // ============================================
 
 // Импорт типов данных для редактора
-import type { EditorProps, Product, Size, Color, SideEnum, LayoutProps, CreateProductProps, EditorState } from '../types';
+import type { EditorProps, Product, Size, Color, SideEnum, LayoutProps, EditorState, ApiConfig } from '../types';
 // Менеджер для работы с localStorage (сохранение/загрузка состояния)
 import { EditorStorageManager } from '../managers/EditorStorageManager';
 // Модель для работы со слоями (Layout - это изображение или текст на холсте)
@@ -27,13 +27,6 @@ const CONSTANTS = {
     STATE_EXPIRATION_DAYS: 30,      // Сколько дней хранить состояние в localStorage
     CANVAS_AREA_HEIGHT: 600,         // Высота области canvas в пикселях
     LOADING_INTERVAL_MS: 100,        // Интервал проверки загрузки (мс)
-} as const;
-
-// URL-адреса API endpoints
-const API_ENDPOINTS = {
-    WEBHOOK_CART: 'https://primary-production-654c.up.railway.app/webhook/cart',           // Webhook для добавления в корзину
-    UPLOAD_IMAGE: 'https://preview-service-production-fd20.up.railway.app/upload',                            // Загрузка изображений на сервер
-    WEBHOOK_REQUEST: 'https://primary-production-654c.up.railway.app/webhook/request',     // Webhook для генерации изображений
 } as const;
 
 // ============================================
@@ -139,6 +132,11 @@ export default class Editor {
     private readonly storageManager: EditorStorageManager;  // Менеджер для работы с localStorage
 
     // ============================================
+    // КОНФИГУРАЦИЯ
+    // ============================================
+    private readonly apiConfig: ApiConfig;          // Конфигурация API endpoints
+
+    // ============================================
     // СОСТОЯНИЕ РЕДАКТОРА (приватное, доступ через геттеры)
     // ============================================
     private _selectType: Product['type'];           // Текущий выбранный тип продукта (tshirt/hoodie)
@@ -214,7 +212,7 @@ export default class Editor {
     get selectSize(): Size { return this._selectSize; }
     get selectLayout(): Layout['id'] | null { return this._selectLayout; }
 
-    constructor({ blocks, productConfigs, formConfig }: EditorProps) {
+    constructor({ blocks, productConfigs, formConfig, apiConfig }: EditorProps) {
         // Валидация конфигурации
         if (!productConfigs || productConfigs.length === 0) {
             throw new Error('[Editor] Не предоставлены конфигурации продуктов');
@@ -225,6 +223,9 @@ export default class Editor {
 
         // Конфигурация продуктов
         this.productConfigs = productConfigs;
+
+        // Конфигурация API
+        this.apiConfig = apiConfig;
 
         // Инициализация обязательных DOM элементов с проверкой
         this.editorBlock = this.getRequiredElement(blocks.editorBlockClass);
@@ -1439,7 +1440,7 @@ export default class Editor {
                 formData.append("art", article.toString());
 
                 // ИСПРАВЛЕНИЕ: Добавлен await для webhook
-                await fetch(API_ENDPOINTS.WEBHOOK_CART, {
+                await fetch(this.apiConfig.webhookCart, {
                     method: "POST",
                     body: formData
                 });
@@ -1708,6 +1709,10 @@ export default class Editor {
                     layoutId,
                     isNew: this._selectLayout ? false : true,
                 });
+
+                try {
+                    (window as any).ym(103279214, 'reachGoal', 'generated');
+                } catch (error) { }
 
                 this.emit(EditorEventType.MOCKUP_LOADING, false);
 
@@ -2734,7 +2739,7 @@ export default class Editor {
 
         const userId = await this.storageManager.getUserId();
 
-        const response = await fetch(API_ENDPOINTS.UPLOAD_IMAGE, {
+        const response = await fetch(this.apiConfig.uploadImage, {
             method: 'POST',
             body: JSON.stringify({ image: base64, user_id: userId }),
             headers: {
