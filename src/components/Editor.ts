@@ -1612,6 +1612,44 @@ export default class Editor {
         }
     }
 
+    /**
+     * Блокирует/разблокирует элементы управления (цвет, вид, продукт) во время генерации
+     */
+    private setControlsDisabled(disabled: boolean): void {
+        const opacity = disabled ? '0.5' : '1';
+        const pointerEvents = disabled ? 'none' : 'auto';
+        const cursor = disabled ? 'not-allowed' : 'pointer';
+
+        // Блокируем кнопку смены вида
+        if (this.changeSideButton) {
+            this.changeSideButton.style.opacity = opacity;
+            this.changeSideButton.style.pointerEvents = pointerEvents;
+            this.changeSideButton.style.cursor = cursor;
+        }
+
+        // Блокируем блоки цветов
+        this.colorBlocks.forEach(block => {
+            const parent = block.parentElement;
+            if (parent) {
+                parent.style.opacity = opacity;
+                parent.style.pointerEvents = pointerEvents;
+                parent.style.cursor = cursor;
+            }
+        });
+
+        // Блокируем блоки продуктов
+        this.productBlocks.forEach(block => {
+            const parent = block.parentElement;
+            if (parent) {
+                parent.style.opacity = opacity;
+                parent.style.pointerEvents = pointerEvents;
+                parent.style.cursor = cursor;
+            }
+        });
+
+        console.debug(`[controls] Элементы управления ${disabled ? 'заблокированы' : 'разблокированы'}`);
+    }
+
     private initUploadImageButton(): void {
         if (!this.editorUploadImageButton) return;
 
@@ -1695,6 +1733,7 @@ export default class Editor {
             // НОВОЕ: Устанавливаем флаг и показываем анимацию
             this.isGenerating = true;
             this.setGenerateButtonLoading(true, 'Генерация...');
+            this.setControlsDisabled(true);  // Блокируем элементы управления
 
             this.emit(EditorEventType.MOCKUP_LOADING, true);
 
@@ -1756,6 +1795,7 @@ export default class Editor {
 
                 // НОВОЕ: Показываем успешную генерацию
                 this.setGenerateButtonLoading(false, '✓ Готово!');
+                this.setControlsDisabled(false);  // Разблокируем элементы управления
 
                 // Возвращаем оригинальный текст через 2 секунды
                 setTimeout(() => {
@@ -1771,6 +1811,7 @@ export default class Editor {
 
                 // НОВОЕ: Восстанавливаем кнопку при ошибке
                 this.setGenerateButtonLoading(false, 'Сгенерировать');
+                this.setControlsDisabled(false);  // Разблокируем элементы управления
                 this.isGenerating = false;
 
                 return;
@@ -1843,6 +1884,12 @@ export default class Editor {
     }
 
     changeProduct(productType: Product['type']): void {
+        // Блокируем переключение продукта во время генерации
+        if (this.isGenerating) {
+            console.warn('[changeProduct] Генерация в процессе, переключение заблокировано');
+            return;
+        }
+
         this._selectType = productType;
         this.clearMockupCache(); // Очищаем кэш при смене продукта
 
@@ -1889,6 +1936,12 @@ export default class Editor {
     }
 
     changeSide(): void {
+        // Блокируем переключение вида во время генерации
+        if (this.isGenerating) {
+            console.warn('[changeSide] Генерация в процессе, переключение заблокировано');
+            return;
+        }
+
         const newSide: SideEnum = this._selectSide === 'front' ? 'back' : 'front';
         this.setActiveSide(newSide);
         this.updateMockup();
@@ -1899,6 +1952,12 @@ export default class Editor {
     }
 
     changeColor(colorName: string): void {
+        // Блокируем переключение цвета во время генерации
+        if (this.isGenerating) {
+            console.warn('[changeColor] Генерация в процессе, переключение заблокировано');
+            return;
+        }
+
         const product = this.getProductByType(this._selectType);
         if (!product) return;
 
