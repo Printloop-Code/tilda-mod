@@ -463,8 +463,16 @@ export default class Editor {
 
     private initEvents(): void {
 
-        window.onbeforeunload = () => {
-            return alert("Вы уверены, что хотите покинуть эту страницу?");
+        // Показываем предупреждение только если слои есть
+        window.onbeforeunload = (e) => {
+            if (this.layouts.length > 0) {
+                const message = 'Дизайн может быть потерян. Вы уверены, что хотите покинуть страницу?';
+                e.preventDefault();
+                e.returnValue = message; // Для старых браузеров
+                return message; // Для новых браузеров
+            }
+
+            return undefined;
         }
 
         // Обновление мокапа
