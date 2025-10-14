@@ -175,6 +175,7 @@ export default class Editor {
     // ============================================
     private isLoading: boolean = true;                  // Флаг: идет загрузка
     private isAddingToCart: boolean = false;            // Флаг: идет добавление в корзину (защита от дубликатов)
+    private isAddedToCart: boolean = false;             // Флаг: дизайн добавлен в корзину (отключает предупреждение при уходе)
     private isGenerating: boolean = false;              // Флаг: идет генерация (защита от дубликатов)
     private loadingTime: number = 0;                    // Счетчик времени загрузки (секунды)
     private loadingInterval: NodeJS.Timeout | null = null;  // Интервал для обновления времени загрузки
@@ -463,10 +464,10 @@ export default class Editor {
 
     private initEvents(): void {
 
-        // Показываем предупреждение только если слои есть
+        // Показываем предупреждение только если слои есть и дизайн не был добавлен в корзину
         window.onbeforeunload = (e) => {
-            if (this.layouts.length > 0) {
-                const message = 'Дизайн может быть потерян. Вы уверены, что хотите покинуть страницу?';
+            if (this.layouts.length > 0 && !this.isAddedToCart) {
+                const message = 'Дизайн редактора может быть потерян. Вы уверены, что хотите покинуть страницу?';
                 e.preventDefault();
                 e.returnValue = message; // Для старых браузеров
                 return message; // Для новых браузеров
@@ -1462,6 +1463,9 @@ export default class Editor {
                     article,
                     price: this.getSum(),
                 });
+
+                // Устанавливаем флаг, что товар добавлен в корзину (отключаем предупреждение при уходе со страницы)
+                this.isAddedToCart = true;
 
                 console.debug('[order] Заказ успешно создан');
 
