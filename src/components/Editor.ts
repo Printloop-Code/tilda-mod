@@ -466,7 +466,7 @@ export default class Editor {
 
         // Показываем предупреждение только если слои есть и дизайн не был добавлен в корзину
         window.onbeforeunload = (e) => {
-            if (this.layouts.length > 0 && !this.isAddedToCart) {
+            if (this.layouts.length > 0 && !this.isAddedToCart && this.layersHistory.length > 0) {
                 const message = 'Дизайн редактора может быть потерян. Вы уверены, что хотите покинуть страницу?';
                 e.preventDefault();
                 e.returnValue = message; // Для старых браузеров
