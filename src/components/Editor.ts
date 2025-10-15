@@ -135,6 +135,7 @@ export default class Editor {
     // КОНФИГУРАЦИЯ
     // ============================================
     private readonly apiConfig: ApiConfig;          // Конфигурация API endpoints
+    private readonly options?: EditorProps['options'];  // Дополнительные опции редактора
 
     // ============================================
     // СОСТОЯНИЕ РЕДАКТОРА (приватное, доступ через геттеры)
@@ -213,7 +214,7 @@ export default class Editor {
     get selectSize(): Size { return this._selectSize; }
     get selectLayout(): Layout['id'] | null { return this._selectLayout; }
 
-    constructor({ blocks, productConfigs, formConfig, apiConfig }: EditorProps) {
+    constructor({ blocks, productConfigs, formConfig, apiConfig, options }: EditorProps) {
         // Валидация конфигурации
         if (!productConfigs || productConfigs.length === 0) {
             throw new Error('[Editor] Не предоставлены конфигурации продуктов');
@@ -227,6 +228,9 @@ export default class Editor {
 
         // Конфигурация API
         this.apiConfig = apiConfig;
+
+        // Дополнительные опции
+        this.options = options;
 
         // Инициализация обязательных DOM элементов с проверкой
         this.editorBlock = this.getRequiredElement(blocks.editorBlockClass);
@@ -464,16 +468,18 @@ export default class Editor {
 
     private initEvents(): void {
 
-        // Показываем предупреждение только если слои есть и дизайн не был добавлен в корзину
-        window.onbeforeunload = (e) => {
-            if (this.layouts.length > 0 && !this.isAddedToCart && this.layersHistory.length > 0) {
-                const message = 'Дизайн редактора может быть потерян. Вы уверены, что хотите покинуть страницу?';
-                e.preventDefault();
-                e.returnValue = message; // Для старых браузеров
-                return message; // Для новых браузеров
-            }
+        // Показываем предупреждение только если опция не отключена и слои есть и дизайн не был добавлен в корзину
+        if (!this.options?.disableBeforeUnloadWarning) {
+            window.onbeforeunload = (e) => {
+                if (this.layouts.length > 0 && !this.isAddedToCart && this.layersHistory.length > 0) {
+                    const message = 'Дизайн редактора может быть потерян. Вы уверены, что хотите покинуть страницу?';
+                    e.preventDefault();
+                    e.returnValue = message; // Для старых браузеров
+                    return message; // Для новых браузеров
+                }
 
-            return undefined;
+                return undefined;
+            }
         }
 
         // Обновление мокапа

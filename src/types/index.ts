@@ -159,6 +159,9 @@ export type EditorProps = {
     }
     productConfigs: Product[];
     apiConfig: ApiConfig;  // Конфигурация API endpoints
+    options?: {
+        disableBeforeUnloadWarning?: boolean;  // Отключить предупреждение при уходе со страницы
+    }
 }
 
 // Popup типы
