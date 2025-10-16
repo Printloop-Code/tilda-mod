@@ -2,12 +2,8 @@ import { EditorStorageManager } from '../managers/EditorStorageManager';
 import { Layout } from '../models/Layout';
 import { CreateProductProps } from '../types';
 
-// API endpoints
-const API_ENDPOINTS = {
-    WEBHOOK_REQUEST: 'https://primary-production-654c.up.railway.app/webhook/request',
-} as const;
-
 type GenerateImageProps = {
+    uri: string;
     prompt: string;
     shirtColor: string;
     image?: string | null | undefined;
@@ -17,6 +13,7 @@ type GenerateImageProps = {
 }
 
 export async function generateImage({
+    uri,
     prompt,
     shirtColor,
     image,
@@ -65,7 +62,7 @@ export async function generateImage({
         formData.set('request_type', 'edit');
     }
 
-    const response = await fetch(API_ENDPOINTS.WEBHOOK_REQUEST, {
+    const response = await fetch(uri, {
         method: "POST",
         body: formData,
     });

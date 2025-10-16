@@ -1759,6 +1759,7 @@ export default class Editor {
 
             try {
                 const url = await generateImage({
+                    uri: this.apiConfig.webhookRequest,
                     prompt,
                     shirtColor: this._selectColor.name,
                     image: this._selectLayout ? this.loadedUserImage !== this.layouts.find(layout => layout.id === this._selectLayout)?.url ? this.loadedUserImage : null : this.loadedUserImage,
