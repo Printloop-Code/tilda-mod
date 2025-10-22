@@ -107,6 +107,7 @@ export default class Editor {
     private editorUploadCancelButton?: HTMLElement;     // Кнопка отмены загрузки
     private editorLoadWithAiButton?: HTMLElement;       // Кнопка "Загрузить с AI"
     private editorLoadWithoutAiButton?: HTMLElement;    // Кнопка "Загрузить без AI"
+    private editorRemoveBackgroundCheckbox?: HTMLInputElement; // Чекбокс "Удалить фон"
     private editorAddOrderButton?: HTMLElement;         // Кнопка "Добавить в корзину"
     private editorSumBlock?: HTMLElement;               // Блок с суммой заказа
     private editorProductName?: HTMLElement;            // Название продукта
@@ -193,6 +194,7 @@ export default class Editor {
     // ============================================
     private loadedUserImage: string | null = null;  // Data URL загруженного пользователем изображения
     private editorLoadWithAi: boolean = false;      // Флаг: загружать с AI обработкой
+    private removeBackgroundEnabled: boolean = false; // Флаг: удалить фон (только для не-ИИ генерации)
 
     // ============================================
     // КЭШ ДЛЯ ОПТИМИЗАЦИИ
@@ -278,6 +280,11 @@ export default class Editor {
 
         const editorLoadWithoutAiButton = document.querySelector(blocks.editorLoadWithoutAiButtonClass);
         if (editorLoadWithoutAiButton) this.editorLoadWithoutAiButton = editorLoadWithoutAiButton as HTMLElement;
+
+        const editorRemoveBackgroundCheckbox = blocks.editorRemoveBackgroundCheckboxClass
+            ? document.querySelector(blocks.editorRemoveBackgroundCheckboxClass)
+            : null;
+        if (editorRemoveBackgroundCheckbox) this.editorRemoveBackgroundCheckbox = editorRemoveBackgroundCheckbox as HTMLInputElement;
 
         const editorAddOrderButton = document.querySelector(blocks.editorAddOrderButtonClass);
         if (editorAddOrderButton) this.editorAddOrderButton = editorAddOrderButton as HTMLElement;
@@ -1766,6 +1773,7 @@ export default class Editor {
                     withAi: this.editorLoadWithAi,
                     layoutId,
                     isNew: this._selectLayout ? false : true,
+                    background: !this.removeBackgroundEnabled, // Инвертируем: если "удалить фон" включен, то background=false
                 });
 
                 try {
@@ -2119,6 +2127,42 @@ export default class Editor {
                 this.changeLoadWithAi(false);
             };
         }
+
+        // Инициализируем чекбокс удаления фона
+        this.initRemoveBackgroundCheckbox();
+    }
+
+    private initRemoveBackgroundCheckbox(): void {
+        if (!this.editorRemoveBackgroundCheckbox) return;
+
+        // Устанавливаем обработчик изменения состояния чекбокса
+        this.editorRemoveBackgroundCheckbox.onchange = () => {
+            if (this.editorRemoveBackgroundCheckbox) {
+                this.removeBackgroundEnabled = this.editorRemoveBackgroundCheckbox.checked;
+                console.debug('[remove background] Состояние изменено:', this.removeBackgroundEnabled);
+            }
+        };
+
+        // Начальное состояние - скрыт (будет показан при выборе "Без ИИ")
+        this.updateRemoveBackgroundVisibility();
+    }
+
+    private updateRemoveBackgroundVisibility(): void {
+        if (!this.editorRemoveBackgroundCheckbox) return;
+
+        const parentElement = this.editorRemoveBackgroundCheckbox.parentElement;
+        if (!parentElement) return;
+
+        // Чекбокс виден только при не-ИИ генерации (когда загружено изображение)
+        if (this.loadedUserImage && !this.editorLoadWithAi) {
+            parentElement.style.display = '';
+            console.debug('[remove background] Чекбокс показан (не-ИИ режим)');
+        } else {
+            parentElement.style.display = 'none';
+            this.editorRemoveBackgroundCheckbox.checked = false;
+            this.removeBackgroundEnabled = false;
+            console.debug('[remove background] Чекбокс скрыт (ИИ режим или нет изображения)');
+        }
     }
 
     private hideAiButtons(): void {
@@ -2199,6 +2243,9 @@ export default class Editor {
                 imageBlock.style.backgroundRepeat = 'no-repeat';
             }
         }
+
+        // Обновляем видимость чекбокса удаления фона
+        this.updateRemoveBackgroundVisibility();
     }
 
     resetUserUploadImage(): void {
@@ -2208,6 +2255,9 @@ export default class Editor {
 
         this.loadedUserImage = null;
         this.cancelEditLayout();
+
+        // Обновляем видимость чекбокса удаления фона
+        this.updateRemoveBackgroundVisibility();
     }
 
     changeLoadWithAi(value: boolean = false): void {
@@ -2237,6 +2287,9 @@ export default class Editor {
                 }
             }
         }
+
+        // Обновляем видимость чекбокса удаления фона
+        this.updateRemoveBackgroundVisibility();
     }
 
 

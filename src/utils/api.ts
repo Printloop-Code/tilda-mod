@@ -10,6 +10,7 @@ type GenerateImageProps = {
     withAi: boolean;
     layoutId: Layout['id'] | null | undefined;
     isNew?: boolean;
+    background?: boolean;
 }
 
 export async function generateImage({
@@ -20,6 +21,7 @@ export async function generateImage({
     withAi,
     layoutId,
     isNew = true,
+    background = true,
 }: GenerateImageProps): Promise<string> {
     const tempStorageManager = new EditorStorageManager();
     const userId = await (tempStorageManager as any).getUserId();
@@ -32,6 +34,7 @@ export async function generateImage({
     formData.set('printSize', "big");
     formData.set('transferType', '');
     formData.set('request_type', 'generate');
+    formData.set('background', background.toString());
 
     if (layoutId)
         formData.set('layoutId', layoutId);

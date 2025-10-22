@@ -8,6 +8,7 @@
 - **Поддержка продуктов**: футболки, толстовки
 - **Слои**: добавление текста и изображений
 - **AI-генерация изображений** через API
+- **Удаление фона** изображений при не-ИИ генерации
 - **История изменений** с функциями отмены/повтора (Undo/Redo)
 - **Автосохранение** состояния в IndexedDB
 - **Миграция данных** из localStorage в IndexedDB
@@ -140,7 +141,8 @@ const editorConfig = {
         editorHistoryUndoBlockClass: '#history-undo',
         editorHistoryRedoBlockClass: '#history-redo',
         editorLoadWithAiButtonClass: '#load-with-ai',
-        editorLoadWithoutAiButtonClass: '#load-without-ai'
+        editorLoadWithoutAiButtonClass: '#load-without-ai',
+        editorRemoveBackgroundCheckboxClass: '#remove-background-checkbox' // Опционально
     },
     
     // Конфигурация продуктов
@@ -309,18 +311,58 @@ editor.redo();
 
 ```javascript
 // Генерация изображения по текстовому описанию
-const generatedImageUrl = await generateImage(
-    'котик в космосе',        // Описание
-    'white',                  // Цвет товара
-    null,                     // Базовое изображение (опционально)
-    layoutId                  // ID слоя (опционально)
-);
+const generatedImageUrl = await generateImage({
+    uri: '/api/generate-image',
+    prompt: 'котик в космосе',     // Описание
+    shirtColor: 'white',            // Цвет товара
+    image: null,                    // Базовое изображение (опционально)
+    withAi: true,                   // С AI или без
+    layoutId: null,                 // ID слоя (опционально)
+    isNew: true,                    // Новый или редактирование
+    background: true                // Сохранить фон (true) или удалить (false)
+});
 
 // Добавление сгенерированного изображения на холст
 if (generatedImageUrl) {
     editor.addImageLayout(generatedImageUrl);
 }
 ```
+
+### Удаление фона изображений
+
+Функция удаления фона доступна только при **не-ИИ генерации** (когда пользователь загружает своё изображение).
+
+#### Интеграция чекбокса удаления фона
+
+**HTML:**
+```html
+<div class="t-checkbox" style="display: none;">
+    <input type="checkbox" 
+           id="remove-background-checkbox" 
+           class="remove-background-checkbox"
+           name="remove-background">
+    <label for="remove-background-checkbox">Удалить фон</label>
+</div>
+```
+
+**JavaScript:**
+```javascript
+const editor = new Editor({
+    blocks: {
+        // ... другие блоки ...
+        editorRemoveBackgroundCheckboxClass: '.remove-background-checkbox'
+    },
+    // ... остальная конфигурация ...
+});
+```
+
+**Особенности:**
+- ✅ Чекбокс отображается только при не-ИИ генерации
+- ✅ Чекбокс скрывается при ИИ генерации
+- ✅ Параметр `background` передается в API автоматически
+- ✅ По умолчанию фон сохраняется (`background: true`)
+
+**Подробная документация:** См. файл [REMOVE_BACKGROUND_FEATURE.md](./REMOVE_BACKGROUND_FEATURE.md)
 
 ### Управление состоянием
 
