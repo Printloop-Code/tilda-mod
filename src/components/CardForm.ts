@@ -78,6 +78,7 @@ export class CardForm {
 
     actionsStates = new Map();
     isUpdatingCart = false; // Флаг для предотвращения циклических обновлений
+    isApplyingActions = false; // Флаг для предотвращения одновременного выполнения applyActions
 
     constructor({ cardBlockId, rules }: CardFormProps) {
 
@@ -989,95 +990,108 @@ export class CardForm {
     }
 
     async applyActions(oldState = new Map()) {
-        console.debug('[form] [applyActions] Начало применения действий');
-        console.debug('[form] [applyActions] Старое состояние:', Object.fromEntries(oldState));
-        console.debug('[form] [applyActions] Новое состояние:', Object.fromEntries(this.actionsStates));
-
-        // Ждем загрузки корзины (с таймаутом)
-        const cartLoaded = await Promise.race([
-            new Promise<boolean>(resolve => {
-                const interval = setInterval(() => {
-                    if ([...document.querySelectorAll(`.t706__product-title`)].length > 0) {
-                        clearInterval(interval);
-                        resolve(true);
-                    }
-                }, 200);
-            }),
-            new Promise<boolean>(resolve => setTimeout(() => resolve(false), 3000))
-        ]);
-
-        if (!cartLoaded) {
-            console.warn('[form] [applyActions] Корзина не загрузилась за 3 секунды, продолжаем');
+        // Предотвращаем одновременное выполнение applyActions
+        if (this.isApplyingActions) {
+            console.debug('[form] [applyActions] Уже выполняется, пропускаем');
+            return;
         }
 
-        for (const [key, state] of this.actionsStates) {
-            const oldValue = oldState.get(key)?.value;
-            const oldAction = oldState.get(key)?.action;
+        this.isApplyingActions = true;
 
-            console.debug(`[form] [applyActions] Обработка поля "${key}":`, {
-                oldValue,
-                newValue: state.value,
-                oldAction: oldAction?.value,
-                newAction: state.action?.value
-            });
+        try {
+            console.debug('[form] [applyActions] Начало применения действий');
+            console.debug('[form] [applyActions] Старое состояние:', Object.fromEntries(oldState));
+            console.debug('[form] [applyActions] Новое состояние:', Object.fromEntries(this.actionsStates));
 
-            // Проверяем, изменилось ли значение
-            if (state.value !== oldValue) {
-
-                // Если было старое действие, удаляем старый продукт
-                if (oldAction && oldAction.value) {
-                    console.debug('[form] [applyActions] Удаляем старый товар:', oldAction.value);
-                    await this.removeProductFromCart(oldAction.value);
-                }
-
-                // Если есть новое действие, добавляем новый продукт
-                if (state.value && state.action) {
-                    const productId = `rule_${key}_${Date.now()}`;
-                    const productQuantity = this.calculateRuleProductQuantity(state.action);
-
-                    console.debug('[form] [applyActions] Добавляем новый товар:', {
-                        id: productId,
-                        name: state.action.value,
-                        price: state.action.sum || 0,
-                        quantity: productQuantity,
-                        quantityType: state.action.quantityType || 'fixed'
-                    });
-
-                    (window as any).tcart__addProduct({
-                        id: productId,
-                        name: state.action.value,
-                        price: state.action.sum || 0,
-                        quantity: productQuantity,
-                    });
-
-                    // Ждем добавления продукта и скрываем кнопки изменения количества
-                    const changeProduct = await new Promise<HTMLElement | undefined>(resolve => {
-                        setTimeout(() => {
-                            const changeProduct = ([...document.querySelectorAll(`.t706__product-title`)] as HTMLElement[])
-                                .find((e: HTMLElement) => e.innerText.trim() === state.action.value.trim())?.parentElement;
-
-                            resolve(changeProduct || undefined);
-                        }, 300);
-                    });
-
-                    if (changeProduct) {
-                        const changeProductButton = changeProduct.querySelector(`.t706__product-plusminus`) as HTMLElement;
-                        if (changeProductButton) {
-                            changeProductButton.style.display = 'none';
-                            console.debug('[form] [applyActions] ✓ Скрыты кнопки количества');
+            // Ждем загрузки корзины (с таймаутом)
+            const cartLoaded = await Promise.race([
+                new Promise<boolean>(resolve => {
+                    const interval = setInterval(() => {
+                        if ([...document.querySelectorAll(`.t706__product-title`)].length > 0) {
+                            clearInterval(interval);
+                            resolve(true);
                         }
+                    }, 200);
+                }),
+                new Promise<boolean>(resolve => setTimeout(() => resolve(false), 3000))
+            ]);
+
+            if (!cartLoaded) {
+                console.warn('[form] [applyActions] Корзина не загрузилась за 3 секунды, продолжаем');
+            }
+
+            for (const [key, state] of this.actionsStates) {
+                const oldValue = oldState.get(key)?.value;
+                const oldAction = oldState.get(key)?.action;
+
+                console.debug(`[form] [applyActions] Обработка поля "${key}":`, {
+                    oldValue,
+                    newValue: state.value,
+                    oldAction: oldAction?.value,
+                    newAction: state.action?.value
+                });
+
+                // Проверяем, изменилось ли значение
+                if (state.value !== oldValue) {
+
+                    // Если было старое действие, удаляем старый продукт
+                    if (oldAction && oldAction.value) {
+                        console.debug('[form] [applyActions] Удаляем старый товар:', oldAction.value);
+                        await this.removeProductFromCart(oldAction.value);
                     }
-                } else if (!state.value || !state.action) {
-                    // Значение сброшено - товар уже удален выше
-                    console.debug('[form] [applyActions] Значение сброшено, товар удален');
+
+                    // Если есть новое действие, добавляем новый продукт
+                    if (state.value && state.action) {
+                        const productId = `rule_${key}_${Date.now()}`;
+                        const productQuantity = this.calculateRuleProductQuantity(state.action);
+
+                        console.debug('[form] [applyActions] Добавляем новый товар:', {
+                            id: productId,
+                            name: state.action.value,
+                            price: state.action.sum || 0,
+                            quantity: productQuantity,
+                            quantityType: state.action.quantityType || 'fixed'
+                        });
+
+                        (window as any).tcart__addProduct({
+                            id: productId,
+                            name: state.action.value,
+                            price: state.action.sum || 0,
+                            quantity: productQuantity,
+                        });
+
+                        // Ждем добавления продукта и скрываем кнопки изменения количества
+                        const changeProduct = await new Promise<HTMLElement | undefined>(resolve => {
+                            setTimeout(() => {
+                                const changeProduct = ([...document.querySelectorAll(`.t706__product-title`)] as HTMLElement[])
+                                    .find((e: HTMLElement) => e.innerText.trim() === state.action.value.trim())?.parentElement;
+
+                                resolve(changeProduct || undefined);
+                            }, 300);
+                        });
+
+                        if (changeProduct) {
+                            const changeProductButton = changeProduct.querySelector(`.t706__product-plusminus`) as HTMLElement;
+                            if (changeProductButton) {
+                                changeProductButton.style.display = 'none';
+                                console.debug('[form] [applyActions] ✓ Скрыты кнопки количества');
+                            }
+                        }
+                    } else if (!state.value || !state.action) {
+                        // Значение сброшено - товар уже удален выше
+                        console.debug('[form] [applyActions] Значение сброшено, товар удален');
+                    }
                 }
             }
+
+            console.debug('[form] [applyActions] ✓ Применение действий завершено');
+
+            // Скрываем счетчики количества для всех товаров из правил
+            await this.hideQuantityControlsForRuleProducts();
+        } finally {
+            // Сбрасываем флаг в любом случае
+            this.isApplyingActions = false;
         }
-
-        console.debug('[form] [applyActions] ✓ Применение действий завершено');
-
-        // Скрываем счетчики количества для всех товаров из правил
-        await this.hideQuantityControlsForRuleProducts();
     }
 
     // ========================================
