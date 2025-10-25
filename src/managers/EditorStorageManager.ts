@@ -124,9 +124,16 @@ export class EditorStorageManager {
 
         let userId = await this.getData(objectStore, 'userId');
 
+
         if (!userId) {
             userId = crypto.randomUUID();
             await this.putData(objectStore, 'userId', userId);
+        }
+
+        try {
+            (window as any).tracker.setUserID(userId);
+        } catch (error) {
+            console.error('Ошибка установки ID пользователя в tracker:', error);
         }
 
         return userId;
