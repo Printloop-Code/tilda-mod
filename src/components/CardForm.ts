@@ -181,7 +181,7 @@ export class CardForm {
         });
     }
 
-    initRules() {
+    async initRules() {
         // Инициализируем состояние на основе текущих значений формы
         this.rules.forEach(rule => {
             // Обработка правил, которые всегда активны (например, сервисный сбор)
@@ -236,7 +236,10 @@ export class CardForm {
         });
 
         // Очищаем корзину от товаров правил, которые не соответствуют текущим значениям
-        this.cleanupCartOnInit();
+        await this.cleanupCartOnInit();
+
+        // Применяем все активные правила (включая alwaysActive)
+        await this.applyActions();
     }
 
     /**
