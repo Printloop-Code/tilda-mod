@@ -151,7 +151,7 @@ export type EditorProps = {
         editorHistoryRedoBlockClass: string;
         editorLoadWithAiButtonClass: string;
         editorLoadWithoutAiButtonClass: string;
-        editorRemoveBackgroundCheckboxClass?: string;
+        editorRemoveBackgroundButtonClass?: string;
     }
     formConfig?: {
         formBlockClass: string;

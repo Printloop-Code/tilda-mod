@@ -142,7 +142,7 @@ const editorConfig = {
         editorHistoryRedoBlockClass: '#history-redo',
         editorLoadWithAiButtonClass: '#load-with-ai',
         editorLoadWithoutAiButtonClass: '#load-without-ai',
-        editorRemoveBackgroundCheckboxClass: '#remove-background-checkbox' // Опционально
+        editorRemoveBackgroundButtonClass: '#remove-background-button' // Опционально
     },
     
     // Конфигурация продуктов
@@ -350,16 +350,17 @@ if (generatedImageUrl) {
 const editor = new Editor({
     blocks: {
         // ... другие блоки ...
-        editorRemoveBackgroundCheckboxClass: '.remove-background-checkbox'
+        editorRemoveBackgroundButtonClass: '.remove-background-button'
     },
     // ... остальная конфигурация ...
 });
 ```
 
 **Особенности:**
-- ✅ Чекбокс отображается только при не-ИИ генерации
-- ✅ Чекбокс скрывается при ИИ генерации
+- ✅ Кнопка-переключатель отображается только при не-ИИ генерации
+- ✅ Кнопка скрывается при ИИ генерации
 - ✅ Параметр `background` передается в API автоматически
+- ✅ Визуальная индикация активного состояния через изменение цвета границы
 - ✅ По умолчанию фон сохраняется (`background: true`)
 
 **Подробная документация:** См. файл [REMOVE_BACKGROUND_FEATURE.md](./REMOVE_BACKGROUND_FEATURE.md)

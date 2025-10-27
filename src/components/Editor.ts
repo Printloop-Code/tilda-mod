@@ -107,7 +107,7 @@ export default class Editor {
     private editorUploadCancelButton?: HTMLElement;     // Кнопка отмены загрузки
     private editorLoadWithAiButton?: HTMLElement;       // Кнопка "Загрузить с AI"
     private editorLoadWithoutAiButton?: HTMLElement;    // Кнопка "Загрузить без AI"
-    private editorRemoveBackgroundCheckbox?: HTMLInputElement; // Чекбокс "Удалить фон"
+    private editorRemoveBackgroundButton?: HTMLElement; // Кнопка "Удалить фон"
     private editorAddOrderButton?: HTMLElement;         // Кнопка "Добавить в корзину"
     private editorSumBlock?: HTMLElement;               // Блок с суммой заказа
     private editorProductName?: HTMLElement;            // Название продукта
@@ -281,10 +281,10 @@ export default class Editor {
         const editorLoadWithoutAiButton = document.querySelector(blocks.editorLoadWithoutAiButtonClass);
         if (editorLoadWithoutAiButton) this.editorLoadWithoutAiButton = editorLoadWithoutAiButton as HTMLElement;
 
-        const editorRemoveBackgroundCheckbox = blocks.editorRemoveBackgroundCheckboxClass
-            ? document.querySelector(blocks.editorRemoveBackgroundCheckboxClass)
+        const editorRemoveBackgroundButton = blocks.editorRemoveBackgroundButtonClass
+            ? document.querySelector(blocks.editorRemoveBackgroundButtonClass)
             : null;
-        if (editorRemoveBackgroundCheckbox) this.editorRemoveBackgroundCheckbox = editorRemoveBackgroundCheckbox as HTMLInputElement;
+        if (editorRemoveBackgroundButton) this.editorRemoveBackgroundButton = editorRemoveBackgroundButton as HTMLElement;
 
         const editorAddOrderButton = document.querySelector(blocks.editorAddOrderButtonClass);
         if (editorAddOrderButton) this.editorAddOrderButton = editorAddOrderButton as HTMLElement;
@@ -2133,14 +2133,15 @@ export default class Editor {
     }
 
     private initRemoveBackgroundCheckbox(): void {
-        if (!this.editorRemoveBackgroundCheckbox) return;
+        if (!this.editorRemoveBackgroundButton) return;
 
-        // Устанавливаем обработчик изменения состояния чекбокса
-        this.editorRemoveBackgroundCheckbox.onchange = () => {
-            if (this.editorRemoveBackgroundCheckbox) {
-                this.removeBackgroundEnabled = this.editorRemoveBackgroundCheckbox.checked;
-                console.debug('[remove background] Состояние изменено:', this.removeBackgroundEnabled);
-            }
+        // Инициализируем начальное состояние
+        this.changeRemoveBackground();
+
+        // Устанавливаем обработчик клика по кнопке
+        this.editorRemoveBackgroundButton.style.cursor = 'pointer';
+        this.editorRemoveBackgroundButton.onclick = () => {
+            this.changeRemoveBackground(!this.removeBackgroundEnabled);
         };
 
         // Начальное состояние - скрыт (будет показан при выборе "Без ИИ")
@@ -2148,21 +2149,39 @@ export default class Editor {
     }
 
     private updateRemoveBackgroundVisibility(): void {
-        if (!this.editorRemoveBackgroundCheckbox) return;
+        if (!this.editorRemoveBackgroundButton) return;
 
-        const parentElement = this.editorRemoveBackgroundCheckbox.parentElement;
+        const parentElement = this.editorRemoveBackgroundButton.parentElement;
         if (!parentElement) return;
 
-        // Чекбокс виден только при не-ИИ генерации (когда загружено изображение)
+        // Кнопка видна только при не-ИИ генерации (когда загружено изображение)
         if (this.loadedUserImage && !this.editorLoadWithAi) {
             parentElement.style.display = '';
-            console.debug('[remove background] Чекбокс показан (не-ИИ режим)');
+            console.debug('[remove background] Кнопка показана (не-ИИ режим)');
         } else {
             parentElement.style.display = 'none';
-            this.editorRemoveBackgroundCheckbox.checked = false;
-            this.removeBackgroundEnabled = false;
-            console.debug('[remove background] Чекбокс скрыт (ИИ режим или нет изображения)');
+            this.changeRemoveBackground(false);
+            console.debug('[remove background] Кнопка скрыта (ИИ режим или нет изображения)');
         }
+    }
+
+    private changeRemoveBackground(value: boolean = false): void {
+        this.removeBackgroundEnabled = value;
+
+        if (this.editorRemoveBackgroundButton) {
+            const buttonElement = getLastChild(this.editorRemoveBackgroundButton);
+            if (buttonElement) {
+                if (value) {
+                    // Активное состояние - обычная граница
+                    buttonElement.style.borderColor = '';
+                } else {
+                    // Неактивное состояние - серая граница
+                    buttonElement.style.borderColor = '#f2f2f2';
+                }
+            }
+        }
+
+        console.debug('[remove background] Состояние изменено:', this.removeBackgroundEnabled);
     }
 
     private hideAiButtons(): void {
