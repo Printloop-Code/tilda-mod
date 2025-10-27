@@ -181,6 +181,7 @@ export default class Editor {
     private isGenerating: boolean = false;              // Флаг: идет генерация (защита от дубликатов)
     private loadingTime: number = 0;                    // Счетчик времени загрузки (секунды)
     private loadingInterval: NodeJS.Timeout | null = null;  // Интервал для обновления времени загрузки
+    private resizeTimeout: NodeJS.Timeout | null = null;    // Таймер для debounce resize события
 
     // ============================================
     // МАССИВЫ UI ЭЛЕМЕНТОВ
@@ -489,10 +490,143 @@ export default class Editor {
             }
         }
 
+        // Обработчик изменения размера окна для динамического пересчета canvas
+        window.addEventListener('resize', () => {
+            this.handleResize();
+        });
+
         // Обновление мокапа
         this.events.on(EditorEventType.MOCKUP_UPDATED, (dataURL) => {
             this.mockupBlock.src = dataURL;
         });
+    }
+
+    /**
+     * Обработчик изменения размера окна с debounce
+     * Пересчитывает размеры canvas и перерисовывает все слои
+     */
+    private handleResize(): void {
+        // Очищаем предыдущий таймер
+        if (this.resizeTimeout) {
+            clearTimeout(this.resizeTimeout);
+        }
+
+        // Устанавливаем новый таймер с задержкой 150ms для debounce
+        this.resizeTimeout = setTimeout(() => {
+            console.debug('[canvas] Изменение размера окна, пересчет canvas');
+            this.resizeAllCanvases();
+        }, 150);
+    }
+
+    /**
+     * Пересчитывает размеры всех canvas и перерисовывает слои
+     * Этот метод вызывается при изменении размера окна
+     */
+    private async resizeAllCanvases(): Promise<void> {
+        // Пересчитываем размеры всех canvas
+        [...this.canvases, ...this.layersCanvases].forEach(canvas => {
+            if (canvas) {
+                canvas.setDimensions({
+                    width: this.editorBlock.clientWidth,
+                    height: this.editorBlock.clientHeight
+                });
+            }
+        });
+
+        // Перерисовываем печатные области на всех canvas
+        this.canvases.forEach(canvas => {
+            this.updatePrintAreaForCanvas(canvas);
+        });
+
+        // Перерисовываем все слои для текущей стороны
+        if (this.activeCanvas && this._selectSide) {
+            await this.redrawAllLayersForSide(this._selectSide);
+        }
+
+        // Перерисовываем слои для других сторон
+        const otherSide: SideEnum = this._selectSide === 'front' ? 'back' : 'front';
+        await this.redrawAllLayersForSide(otherSide);
+    }
+
+    /**
+     * Получает конфигурацию печатной области для указанной стороны
+     * @param side - Сторона (front/back)
+     * @returns Конфигурация печатной области или undefined
+     */
+    private getPrintConfigForSide(side: SideEnum): any {
+        const product = this.productConfigs.find(p => p.type === this._selectType);
+        if (!product) return undefined;
+
+        return product.printConfig.find((config: any) => config.side === side);
+    }
+
+    /**
+     * Обновляет печатную область (clip area и border) для canvas
+     * @param canvas - Canvas для обновления
+     */
+    private updatePrintAreaForCanvas(canvas: fabric.Canvas): void {
+        if (!canvas) return;
+
+        const side = (canvas as any).side;
+        if (!side) return;
+
+        const printConfig = this.getPrintConfigForSide(side);
+        if (!printConfig) return;
+
+        // Вычисляем новые размеры и позицию печатной области
+        const width = printConfig.size.width / 600 * this.editorBlock.clientWidth;
+        const height = printConfig.size.height / 600 * this.editorBlock.clientHeight;
+        const left = (this.editorBlock.clientWidth - width) / 2 + (printConfig.position.x / 100 * this.editorBlock.clientWidth);
+        const top = (this.editorBlock.clientHeight - height) / 2 + (printConfig.position.y / 100 * this.editorBlock.clientHeight);
+
+        // Находим и обновляем clip area
+        const clipArea = canvas.clipPath as fabric.Rect;
+        if (clipArea) {
+            clipArea.set({
+                width,
+                height,
+                left,
+                top
+            });
+        }
+
+        // Находим и обновляем border
+        const objects = canvas.getObjects() as any[];
+        const areaBorder = objects.find(obj => obj.name === 'area:border');
+        if (areaBorder) {
+            areaBorder.set({
+                width: width - 3,
+                height: height - 3,
+                left,
+                top
+            });
+        }
+
+        canvas.renderAll();
+    }
+
+    /**
+     * Полностью перерисовывает все слои для указанной стороны
+     * @param side - Сторона для перерисовки
+     */
+    private async redrawAllLayersForSide(side: SideEnum): Promise<void> {
+        const canvas = this.canvases.find(c => (c as any).side === side);
+        if (!canvas) return;
+
+        // Получаем все объекты кроме служебных (area:border, area:clip)
+        const objects = canvas.getObjects() as any[];
+        const layoutObjects = objects.filter(obj => obj.name && !obj.name.startsWith('area:'));
+
+        // Удаляем все объекты слоев
+        layoutObjects.forEach(obj => canvas.remove(obj));
+
+        // Добавляем все слои заново
+        const layersForSide = this.layouts.filter(layout => layout.view === side);
+        for (const layout of layersForSide) {
+            await this.addLayoutToCanvas(layout);
+        }
+
+        canvas.renderAll();
     }
 
     private initLoadingEvents(): void {
@@ -3093,8 +3227,12 @@ export default class Editor {
         side: SideEnum
     ): Promise<HTMLCanvasElement> {
         const qualityMultiplier = 10;
-        const baseWidth = (editableCanvas as any).getWidth();
-        const baseHeight = (editableCanvas as any).getHeight();
+
+        // ИСПРАВЛЕНИЕ: Используем фиксированный базовый размер вместо размера canvas на экране
+        // Это гарантирует одинаковый экспорт на любом устройстве
+        const baseSize = CONSTANTS.CANVAS_AREA_HEIGHT;
+        const baseWidth = baseSize;
+        const baseHeight = baseSize;
 
         const designCanvas = document.createElement('canvas');
         const designCtx = designCanvas.getContext('2d')!;
@@ -3153,24 +3291,31 @@ export default class Editor {
                 backgroundColor: 'transparent'
             });
 
-            // Применяем clipPath
-            if ((editableCanvas as any).clipPath) {
-                const clonedClip = await new Promise<any>((resolve) => {
-                    (editableCanvas as any).clipPath!.clone((cloned: any) => resolve(cloned));
-                });
-                tempEditableCanvas.clipPath = clonedClip;
-                console.debug(`[export] Применён clipPath для экспорта стороны ${side}`);
+            // ИСПРАВЛЕНИЕ: Создаем clipPath с правильными размерами из конфигурации
+            // вместо копирования с текущего canvas (который зависит от размера экрана)
+            const printArea = this.calculatePrintAreaDimensions(side, baseWidth);
+
+            const clipArea = new fabric.Rect({
+                width: printArea.width,
+                height: printArea.height,
+                left: printArea.left,
+                top: printArea.top,
+                fill: 'rgb(255, 0, 0)',
+                evented: false,
+            } as any);
+
+            tempEditableCanvas.clipPath = clipArea;
+            console.debug(`[export] Создан clipPath для экспорта стороны ${side} с размерами из конфигурации`);
+
+            // ИСПРАВЛЕНИЕ: Пересоздаем объекты из массива layouts с правильными координатами
+            // вместо копирования объектов с текущего canvas (у которых координаты для размера экрана)
+            const layersForSide = this.layouts.filter(layout => layout.view === side);
+
+            for (const layout of layersForSide) {
+                await this.addLayoutToExportCanvas(layout, tempEditableCanvas, printArea);
             }
 
-            // Копируем объекты дизайна (без служебных)
-            const designObjects = this.filterDesignObjects((editableCanvas as any).getObjects());
-
-            for (const obj of designObjects) {
-                const clonedObj = await new Promise<any>((resolve) => {
-                    obj.clone((cloned: any) => resolve(cloned));
-                });
-                tempEditableCanvas.add(clonedObj);
-            }
+            console.debug(`[export] Добавлено ${layersForSide.length} слоев для экспорта стороны ${side}`);
 
             const designDataUrl = tempEditableCanvas.toDataURL({
                 format: 'png',
@@ -3204,6 +3349,86 @@ export default class Editor {
         return allObjects.filter((obj: any) => !serviceObjectNames.has(obj.name));
     }
 
+    /**
+     * Вычисляет размеры печатной области относительно базового размера canvas
+     * Это гарантирует, что экспорт будет одинаковым на любом устройстве
+     * @param side - Сторона (front/back)
+     * @param baseCanvasSize - Базовый размер canvas для расчетов
+     * @returns Размеры и позицию печатной области
+     */
+    private calculatePrintAreaDimensions(side: SideEnum, baseCanvasSize: number = CONSTANTS.CANVAS_AREA_HEIGHT): {
+        width: number;
+        height: number;
+        left: number;
+        top: number;
+    } {
+        const printConfig = this.getPrintConfigForSide(side);
+        if (!printConfig) {
+            console.warn(`[export] Не найдена конфигурация печати для ${side}`);
+            return { width: baseCanvasSize, height: baseCanvasSize, left: 0, top: 0 };
+        }
+
+        // Рассчитываем размеры относительно базового размера (600px)
+        const width = printConfig.size.width / 600 * baseCanvasSize;
+        const height = printConfig.size.height / 600 * baseCanvasSize;
+        const left = (baseCanvasSize - width) / 2 + (printConfig.position.x / 100 * baseCanvasSize);
+        const top = (baseCanvasSize - height) / 2 + (printConfig.position.y / 100 * baseCanvasSize);
+
+        return { width, height, left, top };
+    }
+
+    /**
+     * Добавляет слой на экспортный canvas с правильными координатами
+     * Использует относительные координаты из layout для расчета абсолютных позиций
+     * @param layout - Слой для добавления
+     * @param canvas - Canvas для добавления (обычно временный для экспорта)
+     * @param printArea - Размеры и позиция печатной области
+     */
+    private async addLayoutToExportCanvas(
+        layout: Layout,
+        canvas: fabric.StaticCanvas,
+        printArea: { width: number; height: number; left: number; top: number }
+    ): Promise<void> {
+        // Вычисляем абсолютные координаты из относительных
+        const absoluteLeft = printArea.left + (printArea.width * layout.position.x);
+        const absoluteTop = printArea.top + (printArea.height * layout.position.y);
+
+        if (layout.isImageLayout()) {
+            const image = new fabric.Image(await this.loadImage(layout.url));
+
+            // Автоматически масштабируем, если изображение больше печатной области
+            let finalSize = layout.size;
+            if (finalSize === 1 && image.width! > printArea.width) {
+                finalSize = printArea.width / image.width!;
+            }
+
+            image.set({
+                left: absoluteLeft,
+                top: absoluteTop,
+                scaleX: finalSize,
+                scaleY: finalSize * layout.aspectRatio,
+                angle: layout.angle,
+            } as any);
+
+            canvas.add(image);
+        } else if (layout.isTextLayout()) {
+            const text = new fabric.Text(layout.text, {
+                fontFamily: layout.font.family,
+                fontSize: layout.font.size,
+            });
+
+            text.set({
+                left: absoluteLeft,
+                top: absoluteTop,
+                scaleX: layout.size,
+                scaleY: layout.size * layout.aspectRatio,
+                angle: layout.angle,
+            } as any);
+
+            canvas.add(text);
+        }
+    }
+
     // Экспорт дизайна с обрезкой по clipPath
     private async exportDesignWithClipPath(
         editableCanvas: fabric.Canvas,
@@ -3213,19 +3438,16 @@ export default class Editor {
     ): Promise<HTMLCanvasElement> {
         const qualityMultiplier = 10;
 
-        // Получаем clipPath (область печати)
-        const clipPath = (editableCanvas as any).clipPath;
-        if (!clipPath) {
-            console.warn('[export] clipPath не найден, экспортируем весь canvas');
-            return await this.createDesignCanvas(editableCanvas, layersCanvas, side);
-        }
+        // ИСПРАВЛЕНИЕ: Вычисляем размеры печатной области из конфигурации,
+        // а не берем с canvas (который зависит от размера экрана)
+        const printArea = this.calculatePrintAreaDimensions(side, CONSTANTS.CANVAS_AREA_HEIGHT);
 
-        const clipWidth = clipPath.width;
-        const clipHeight = clipPath.height;
-        const clipLeft = clipPath.left;
-        const clipTop = clipPath.top;
+        const clipWidth = printArea.width;
+        const clipHeight = printArea.height;
+        const clipLeft = printArea.left;
+        const clipTop = printArea.top;
 
-        console.debug(`[export] clipPath: ${clipWidth}x${clipHeight} at (${clipLeft}, ${clipTop})`);
+        console.debug(`[export] Print area (независимо от экрана): ${clipWidth}x${clipHeight} at (${clipLeft}, ${clipTop})`);
 
         // Создаем полный дизайн
         const fullDesignCanvas = await this.createDesignCanvas(editableCanvas, layersCanvas, side);

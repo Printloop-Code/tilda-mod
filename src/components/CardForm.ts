@@ -184,6 +184,19 @@ export class CardForm {
     initRules() {
         // Инициализируем состояние на основе текущих значений формы
         this.rules.forEach(rule => {
+            // Обработка правил, которые всегда активны (например, сервисный сбор)
+            if (rule.alwaysActive && rule.actions.length > 0) {
+                const action = rule.actions[0]; // Берем первое действие
+                if (action) {
+                    this.actionsStates.set(rule.variable, {
+                        value: action.value,
+                        action: action
+                    });
+                    console.debug('[form] [initRules] Инициализировано постоянное правило:', rule.variable, action);
+                }
+                return;
+            }
+
             const field = this.form.elements.namedItem(rule.variable) as HTMLInputElement | HTMLSelectElement | RadioNodeList | null;
 
             if (field) {

@@ -185,6 +185,7 @@ export type RuleCart = {
         quantityType?: 'fixed' | 'perProduct'; // fixed = 1 шт, perProduct = по количеству товаров
         quantity?: number; // конкретное количество (если не указано, используется quantityType)
     }[];
+    alwaysActive?: boolean; // Если true, правило применяется всегда (для сервисных сборов)
 }
 
 export type CardFormProps = {
