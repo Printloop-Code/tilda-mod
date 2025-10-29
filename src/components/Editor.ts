@@ -523,6 +523,8 @@ export default class Editor {
      * Этот метод вызывается при изменении размера окна
      */
     private async resizeAllCanvases(): Promise<void> {
+        console.debug(`[resize] Начало resize, новые размеры: ${this.editorBlock.clientWidth}x${this.editorBlock.clientHeight}`);
+        
         // Пересчитываем размеры всех canvas
         [...this.canvases, ...this.layersCanvases].forEach(canvas => {
             if (canvas) {
@@ -530,22 +532,28 @@ export default class Editor {
                     width: this.editorBlock.clientWidth,
                     height: this.editorBlock.clientHeight
                 });
+                console.debug(`[resize] Canvas ${(canvas as any).side || 'unknown'} изменен на ${this.editorBlock.clientWidth}x${this.editorBlock.clientHeight}`);
             }
         });
 
         // Перерисовываем печатные области на всех canvas
         this.canvases.forEach(canvas => {
+            console.debug(`[resize] Обновление печатной области для ${(canvas as any).side}`);
             this.updatePrintAreaForCanvas(canvas);
         });
 
         // Перерисовываем все слои для текущей стороны
         if (this.activeCanvas && this._selectSide) {
+            console.debug(`[resize] Перерисовка слоев для активной стороны ${this._selectSide}`);
             await this.redrawAllLayersForSide(this._selectSide);
         }
 
         // Перерисовываем слои для других сторон
         const otherSide: SideEnum = this._selectSide === 'front' ? 'back' : 'front';
+        console.debug(`[resize] Перерисовка слоев для другой стороны ${otherSide}`);
         await this.redrawAllLayersForSide(otherSide);
+        
+        console.debug('[resize] Resize завершен');
     }
 
     /**
@@ -562,6 +570,7 @@ export default class Editor {
 
     /**
      * Обновляет печатную область (clip area и border) для canvas
+     * ИСПОЛЬЗУЕТ УНИВЕРСАЛЬНУЮ ФУНКЦИЮ для вычисления координат
      * @param canvas - Canvas для обновления
      */
     private updatePrintAreaForCanvas(canvas: fabric.Canvas): void {
@@ -570,23 +579,17 @@ export default class Editor {
         const side = (canvas as any).side;
         if (!side) return;
 
-        const printConfig = this.getPrintConfigForSide(side);
-        if (!printConfig) return;
-
-        // Вычисляем новые размеры и позицию печатной области
-        const width = printConfig.size.width / 600 * this.editorBlock.clientWidth;
-        const height = printConfig.size.height / 600 * this.editorBlock.clientHeight;
-        const left = (this.editorBlock.clientWidth - width) / 2 + (printConfig.position.x / 100 * this.editorBlock.clientWidth);
-        const top = (this.editorBlock.clientHeight - height) / 2 + (printConfig.position.y / 100 * this.editorBlock.clientHeight);
+        // ИСПРАВЛЕНИЕ: Используем универсальную функцию для вычисления печатной области
+        const printArea = this.calculatePrintAreaForScreen(side);
 
         // Находим и обновляем clip area
         const clipArea = canvas.clipPath as fabric.Rect;
         if (clipArea) {
             clipArea.set({
-                width,
-                height,
-                left,
-                top
+                width: printArea.width,
+                height: printArea.height,
+                left: printArea.left,
+                top: printArea.top
             });
         }
 
@@ -595,10 +598,10 @@ export default class Editor {
         const areaBorder = objects.find(obj => obj.name === 'area:border');
         if (areaBorder) {
             areaBorder.set({
-                width: width - 3,
-                height: height - 3,
-                left,
-                top
+                width: printArea.width - 3,
+                height: printArea.height - 3,
+                left: printArea.left,
+                top: printArea.top
             });
         }
 
@@ -1586,14 +1589,52 @@ export default class Editor {
                 // Создаем продукт и добавляем в корзину
                 const productName = `${this.capitalizeFirstLetter(this.getProductName())} с вашим ${Object.keys(exportedArt).length == 1 ? 'односторонним' : 'двухсторонним'} принтом`;
 
+                // ИСПРАВЛЕНИЕ: Отправляем полные данные слоев с координатами
+                // Используем универсальную функцию для вычисления координат
+                const layoutsData = this.layouts.map(layout => {
+                    const absoluteData = this.calculateLayoutAbsoluteData(layout, layout.view, CONSTANTS.CANVAS_AREA_HEIGHT);
+                    
+                    // Формируем полный набор данных для сервера
+                    return {
+                        id: layout.id,
+                        type: layout.type,
+                        view: layout.view,
+                        // Относительные координаты (0-1) - основные для сервера
+                        position: {
+                            x: layout.position.x,
+                            y: layout.position.y
+                        },
+                        // Размеры
+                        size: layout.size,
+                        aspectRatio: layout.aspectRatio,
+                        angle: layout.angle,
+                        // Абсолютные координаты (для справки/отладки)
+                        absolutePosition: {
+                            left: absoluteData.absoluteLeft,
+                            top: absoluteData.absoluteTop,
+                            width: absoluteData.absoluteWidth,
+                            height: absoluteData.absoluteHeight
+                        },
+                        // Информация о печатной области
+                        printArea: absoluteData.printArea,
+                        // Специфичные данные
+                        url: layout.isImageLayout() ? layout.url : undefined,
+                        name: layout.name,
+                        text: layout.isTextLayout() ? layout.text : undefined,
+                        font: layout.isTextLayout() ? layout.font : undefined
+                    };
+                });
 
-                const layouts = this.layouts.map(layout => ({ ...layout, url: undefined }));
+                console.debug('[order] Данные слоев для отправки на сервер:', layoutsData);
 
                 const userId = await this.storageManager.getUserId();
                 const formData = new FormData();
-                formData.append("layouts", JSON.stringify(layouts));
+                formData.append("layouts", JSON.stringify(layoutsData));
                 formData.append("user_id", userId);
                 formData.append("art", article.toString());
+                // Добавляем информацию о продукте для корректной генерации
+                formData.append("product_type", this._selectType);
+                formData.append("product_color", this._selectColor.name);
 
                 // ИСПРАВЛЕНИЕ: Добавлен await для webhook
                 await fetch(this.apiConfig.webhookCart, {
@@ -2321,15 +2362,27 @@ export default class Editor {
     private hideAiButtons(): void {
         this.editorLoadWithAi = true;
 
+        // Скрываем кнопку "С ИИ"
         if (this.editorLoadWithAiButton) {
             (this.editorLoadWithAiButton.parentElement?.parentElement?.parentElement as HTMLElement).style.display = 'none';
+        }
+
+        // ИСПРАВЛЕНИЕ: Скрываем кнопку "Без ИИ" при редактировании слоя
+        if (this.editorLoadWithoutAiButton) {
+            (this.editorLoadWithoutAiButton.parentElement?.parentElement?.parentElement as HTMLElement).style.display = 'none';
         }
 
     }
 
     private showAiButtons(): void {
+        // Показываем кнопку "С ИИ"
         if (this.editorLoadWithAiButton) {
             (this.editorLoadWithAiButton.parentElement?.parentElement?.parentElement as HTMLElement).style.display = 'flex';
+        }
+        
+        // ИСПРАВЛЕНИЕ: Показываем кнопку "Без ИИ"
+        if (this.editorLoadWithoutAiButton) {
+            (this.editorLoadWithoutAiButton.parentElement?.parentElement?.parentElement as HTMLElement).style.display = 'flex';
         }
     }
 
@@ -2597,17 +2650,16 @@ export default class Editor {
             return;
         }
 
-        const width = printConfig.size.width / 600 * this.editorBlock.clientWidth;
-        const height = printConfig.size.height / 600 * this.editorBlock.clientHeight;
-        const left = (this.editorBlock.clientWidth - width) / 2 + (printConfig.position.x / 100 * this.editorBlock.clientWidth);
-        const top = (this.editorBlock.clientHeight - height) / 2 + (printConfig.position.y / 100 * this.editorBlock.clientHeight);
+        // ИСПРАВЛЕНИЕ: Используем универсальную функцию для вычисления печатной области
+        const side = printConfig.side;
+        const printArea = this.calculatePrintAreaForScreen(side);
 
         // Создание области обрезки
         const clipArea = new fabric.Rect({
-            width,
-            height,
-            left,
-            top,
+            width: printArea.width,
+            height: printArea.height,
+            left: printArea.left,
+            top: printArea.top,
             fill: 'rgb(255, 0, 0)',
             name: 'area:clip',
             evented: false,
@@ -2615,10 +2667,10 @@ export default class Editor {
 
         // Создание границы области
         const areaBorder = new fabric.Rect({
-            width: width - 3,
-            height: height - 3,
-            left,
-            top,
+            width: printArea.width - 3,
+            height: printArea.height - 3,
+            left: printArea.left,
+            top: printArea.top,
             fill: 'rgba(0,0,0,0)',
             strokeWidth: 3,
             stroke: 'rgb(254, 94, 58)',
@@ -2688,31 +2740,29 @@ export default class Editor {
         const layout = this.layouts.find(l => l.id === e.target!.name);
         if (!layout) return;
 
-        const width = printConfig.size.width / 600 * this.editorBlock.clientWidth;
-        const height = printConfig.size.height / 600 * this.editorBlock.clientHeight;
-        const left = Math.round((this.editorBlock.clientWidth - width) / 2 + (printConfig.position.x / 100 * this.editorBlock.clientWidth));
-        const top = Math.round((this.editorBlock.clientHeight - height) / 2 + (printConfig.position.y / 100 * this.editorBlock.clientHeight));
+        // ИСПРАВЛЕНИЕ: Используем универсальную функцию для вычисления печатной области
+        const printArea = this.calculatePrintAreaForScreen(layout.view);
 
         const objWidth = e.target.width! * e.target.scaleX!;
         const objHeight = e.target.height! * e.target.scaleY!;
         const objCenterLeft = e.target.left! + objWidth / 2;
         const objCenterTop = e.target.top! + objHeight / 2;
 
-        const nearX = Math.abs(objCenterLeft - (left + width / 2)) < 7;
-        const nearY = Math.abs(objCenterTop - (top + height / 2)) < 7;
+        const nearX = Math.abs(objCenterLeft - (printArea.left + printArea.width / 2)) < 7;
+        const nearY = Math.abs(objCenterTop - (printArea.top + printArea.height / 2)) < 7;
 
         // Вертикальная направляющая
         if (nearX) {
-            this.showGuideline(canvas, 'vertical', left + width / 2, 0, left + width / 2, this.editorBlock.clientHeight);
-            e.target.set({ left: left + width / 2 - objWidth / 2 });
+            this.showGuideline(canvas, 'vertical', printArea.left + printArea.width / 2, 0, printArea.left + printArea.width / 2, this.editorBlock.clientHeight);
+            e.target.set({ left: printArea.left + printArea.width / 2 - objWidth / 2 });
         } else {
             this.hideGuideline(canvas, 'vertical');
         }
 
         // Горизонтальная направляющая
         if (nearY) {
-            this.showGuideline(canvas, 'horizontal', 0, top + height / 2, this.editorBlock.clientWidth, top + height / 2);
-            e.target.set({ top: top + height / 2 - objHeight / 2 });
+            this.showGuideline(canvas, 'horizontal', 0, printArea.top + printArea.height / 2, this.editorBlock.clientWidth, printArea.top + printArea.height / 2);
+            e.target.set({ top: printArea.top + printArea.height / 2 - objHeight / 2 });
         } else {
             this.hideGuideline(canvas, 'horizontal');
         }
@@ -2729,15 +2779,30 @@ export default class Editor {
         const layout = this.layouts.find(l => l.id === object.name);
         if (!layout) return;
 
-        const width = printConfig.size.width / 600 * this.editorBlock.clientWidth;
-        const height = printConfig.size.height / 600 * this.editorBlock.clientHeight;
-        const left = Math.round((this.editorBlock.clientWidth - width) / 2 + (printConfig.position.x / 100 * this.editorBlock.clientWidth));
-        const top = Math.round((this.editorBlock.clientHeight - height) / 2 + (printConfig.position.y / 100 * this.editorBlock.clientHeight));
+        // ИСПРАВЛЕНИЕ: Используем универсальную функцию для конвертации координат
+        const relativePosition = this.convertAbsoluteToRelativePosition(
+            object.left!,
+            object.top!,
+            layout.view
+        );
+
+        // ИСПРАВЛЕНИЕ: Сохраняем размер как относительный к печатной области
+        // чтобы при resize слой масштабировался пропорционально
+        const printArea = this.calculatePrintAreaForScreen(layout.view);
+        
+        // Вычисляем абсолютный размер объекта в пикселях
+        const objectWidth = (object.width || 0) * object.scaleX!;
+        
+        // Сохраняем как долю от ширины печатной области (0-1)
+        // Это сделает размер независимым от размера экрана
+        const relativeSizeToArea = objectWidth / printArea.width;
+        
+        console.debug(`[handleObjectModified] Object width: ${objectWidth}px, printArea width: ${printArea.width}px, relative: ${relativeSizeToArea}`);
 
         // Обновляем layout
-        layout.position.x = (object.left! - left) / width;
-        layout.position.y = (object.top! - top) / height;
-        layout.size = object.scaleX!;
+        layout.position.x = relativePosition.x;
+        layout.position.y = relativePosition.y;
+        layout.size = relativeSizeToArea; // ИЗМЕНЕНО: теперь это доля от печатной области, а не scaleX
         layout.aspectRatio = object.scaleY! / object.scaleX!;
         layout.angle = object.angle!;
 
@@ -2817,26 +2882,36 @@ export default class Editor {
             return;
         }
 
-        const product = this.getProductByType(this._selectType);
-        if (!product) return;
+        // ИСПРАВЛЕНИЕ: Используем универсальную функцию для вычисления печатной области
+        const printArea = this.calculatePrintAreaForScreen(layout.view);
 
-        const printConfig = product.printConfig.find(pc => pc.side === layout.view);
-        if (!printConfig) return;
+        console.debug(`[addLayoutToCanvas] Layout ${layout.id}: printArea = ${printArea.width}x${printArea.height} at (${printArea.left}, ${printArea.top})`);
+        console.debug(`[addLayoutToCanvas] Layout ${layout.id}: relative position = (${layout.position.x}, ${layout.position.y}), size = ${layout.size}`);
 
-        const width = printConfig.size.width / 600 * this.editorBlock.clientWidth;
-        const height = printConfig.size.height / 600 * this.editorBlock.clientHeight;
-        const left = Math.round((this.editorBlock.clientWidth - width) / 2 + (printConfig.position.x / 100 * this.editorBlock.clientWidth));
-        const top = Math.round((this.editorBlock.clientHeight - height) / 2 + (printConfig.position.y / 100 * this.editorBlock.clientHeight));
-
-        const absoluteLeft = left + (width * layout.position.x);
-        const absoluteTop = top + (height * layout.position.y);
+        // Вычисляем абсолютные координаты из относительных
+        const absoluteLeft = printArea.left + (printArea.width * layout.position.x);
+        const absoluteTop = printArea.top + (printArea.height * layout.position.y);
+        
+        console.debug(`[addLayoutToCanvas] Layout ${layout.id}: absolute position = (${absoluteLeft}, ${absoluteTop})`);
 
         if (layout.isImageLayout()) {
             const image = new fabric.Image(await this.loadImage(layout.url));
 
-            if (layout.size === 1 && image.width! > width) {
-                layout.size = width / image.width!;
+            // ИСПРАВЛЕНИЕ: layout.size теперь - доля от ширины печатной области (0-1)
+            // Вычисляем желаемую ширину объекта в пикселях
+            let desiredWidth = printArea.width * layout.size;
+            
+            // Если размер не задан или слишком большой, используем размер печатной области
+            if (!layout.size || layout.size > 1) {
+                desiredWidth = Math.min(image.width!, printArea.width);
+                // Обновляем layout.size для будущих использований
+                layout.size = desiredWidth / printArea.width;
             }
+            
+            // Вычисляем scaleX относительно натуральной ширины изображения
+            const scaleX = desiredWidth / image.width!;
+            
+            console.debug(`[addLayoutToCanvas] Layout ${layout.id}: desiredWidth = ${desiredWidth}px, image.width = ${image.width}px, scaleX = ${scaleX}`);
 
             image.set({
                 left: absoluteLeft,
@@ -2845,8 +2920,8 @@ export default class Editor {
                 layoutUrl: layout.url, // ИСПРАВЛЕНИЕ (2025): Сохраняем URL изображения в объекте canvas
                 // Это позволяет отслеживать изменения URL при редактировании слоя
                 // В методе updateLayoutsForSide сравнивается layoutUrl с layout.url
-                scaleX: layout.size,
-                scaleY: layout.size * layout.aspectRatio,
+                scaleX: scaleX,
+                scaleY: scaleX * layout.aspectRatio,
                 angle: layout.angle,
             } as any);
             canvas.add(image);
@@ -2855,12 +2930,20 @@ export default class Editor {
                 fontFamily: layout.font.family,
                 fontSize: layout.font.size,
             });
+            
+            // ИСПРАВЛЕНИЕ: layout.size теперь - доля от ширины печатной области (0-1)
+            // Вычисляем желаемую ширину текста в пикселях
+            const desiredWidth = printArea.width * layout.size;
+            const scaleX = desiredWidth / text.width!;
+            
+            console.debug(`[addLayoutToCanvas] Text ${layout.id}: desiredWidth = ${desiredWidth}px, text.width = ${text.width}px, scaleX = ${scaleX}`);
+            
             text.set({
                 top: absoluteTop,
                 left: absoluteLeft,
                 name: layout.id,
-                scaleX: layout.size,
-                scaleY: layout.size * layout.aspectRatio,
+                scaleX: scaleX,
+                scaleY: scaleX * layout.aspectRatio,
                 angle: layout.angle,
             } as any);
             canvas.add(text);
@@ -3141,20 +3224,58 @@ export default class Editor {
         const mockupImg = await this.loadMockupForSide(side);
         if (!mockupImg) return null;
 
-        const { canvas: tempCanvas, ctx, mockupDimensions } = this.createExportCanvas(resolution, mockupImg);
-
-        const designCanvas = await this.createDesignCanvas(
+        // ИСПРАВЛЕНИЕ: Сначала экспортируем ТОЛЬКО печатную область (обрезанный дизайн)
+        // вместо полного canvas 600x600px
+        const croppedDesignCanvas = await this.exportDesignWithClipPath(
             canvases.editableCanvas,
             canvases.layersCanvas,
-            side
+            side,
+            resolution
         );
 
-        // Накладываем дизайн на мокап
+        // Создаем canvas для мокапа
+        const { canvas: tempCanvas, ctx, mockupDimensions } = this.createExportCanvas(resolution, mockupImg);
+
+        // Вычисляем размеры и позицию печатной области на мокапе
+        const printConfig = this.getPrintConfigForSide(side);
+        if (!printConfig) {
+            console.warn(`[export] Не найдена конфигурация печати для ${side}`);
+            return tempCanvas.toDataURL('image/png', 1.0);
+        }
+
+        // ИСПРАВЛЕНИЕ: Используем ту же логику, что в calculatePrintAreaDimensions
+        // для консистентности расчетов
+        
+        // Размеры печатной области относительно базового размера (600px)
+        const baseSize = CONSTANTS.CANVAS_AREA_HEIGHT; // 600
+        const printAreaWidth = printConfig.size.width / 600 * baseSize;
+        const printAreaHeight = printConfig.size.height / 600 * baseSize;
+        const printAreaLeft = (baseSize - printAreaWidth) / 2 + (printConfig.position.x / 100 * baseSize);
+        const printAreaTop = (baseSize - printAreaHeight) / 2 + (printConfig.position.y / 100 * baseSize);
+
+        // Вычисляем относительные координаты печатной области (0-1)
+        const printAreaRelativeLeft = printAreaLeft / baseSize;
+        const printAreaRelativeTop = printAreaTop / baseSize;
+        const printAreaRelativeWidth = printAreaWidth / baseSize;
+        const printAreaRelativeHeight = printAreaHeight / baseSize;
+
+        console.debug(`[export] Печатная область: ${printAreaWidth}x${printAreaHeight} at (${printAreaLeft}, ${printAreaTop}) на базовом canvas ${baseSize}px`);
+        console.debug(`[export] Относительные координаты: ${printAreaRelativeWidth}x${printAreaRelativeHeight} at (${printAreaRelativeLeft}, ${printAreaRelativeTop})`);
+
+        // Применяем относительные координаты к мокапу
+        const printAreaOnMockupWidth = mockupDimensions.width * printAreaRelativeWidth;
+        const printAreaOnMockupHeight = mockupDimensions.height * printAreaRelativeHeight;
+        const printAreaOnMockupX = mockupDimensions.x + (mockupDimensions.width * printAreaRelativeLeft);
+        const printAreaOnMockupY = mockupDimensions.y + (mockupDimensions.height * printAreaRelativeTop);
+
+        console.debug(`[export] Печатная область на мокапе: ${printAreaOnMockupWidth}x${printAreaOnMockupHeight} at (${printAreaOnMockupX}, ${printAreaOnMockupY})`);
+
+        // Накладываем обрезанный дизайн на мокап в позицию печатной области
         ctx.drawImage(
-            designCanvas,
-            0, 0, designCanvas.width, designCanvas.height,
-            mockupDimensions.x, mockupDimensions.y,
-            mockupDimensions.width, mockupDimensions.height
+            croppedDesignCanvas,
+            0, 0, croppedDesignCanvas.width, croppedDesignCanvas.height,
+            printAreaOnMockupX, printAreaOnMockupY,
+            printAreaOnMockupWidth, printAreaOnMockupHeight
         );
 
         console.debug(`[export] Наложен дизайн на мокап для ${side}`);
@@ -3378,8 +3499,151 @@ export default class Editor {
     }
 
     /**
+     * УНИВЕРСАЛЬНАЯ ФУНКЦИЯ: Вычисляет данные слоя с абсолютными координатами
+     * для заданного базового размера canvas.
+     * Эта функция используется ВЕЗДЕ для обеспечения консистентности:
+     * - При экспорте для корзины
+     * - При отправке данных в webhook
+     * - При генерации превью
+     * 
+     * @param layout - Слой с относительными координатами
+     * @param side - Сторона (front/back)
+     * @param baseCanvasSize - Базовый размер canvas (по умолчанию 600px)
+     * @returns Объект с абсолютными координатами и размерами
+     */
+    private calculateLayoutAbsoluteData(
+        layout: Layout,
+        side: SideEnum,
+        baseCanvasSize: number = CONSTANTS.CANVAS_AREA_HEIGHT
+    ): {
+        id: string;
+        type: 'image' | 'text';
+        view: SideEnum;
+        // Абсолютные координаты и размеры
+        absoluteLeft: number;
+        absoluteTop: number;
+        absoluteWidth: number;
+        absoluteHeight: number;
+        // Относительные координаты (для совместимости)
+        relativeX: number;
+        relativeY: number;
+        size: number;
+        aspectRatio: number;
+        angle: number;
+        // Данные печатной области
+        printArea: {
+            width: number;
+            height: number;
+            left: number;
+            top: number;
+        };
+        // Дополнительные данные для разных типов слоев
+        url?: string;
+        name?: string | null;
+        text?: string;
+        font?: { family: string; size: number };
+    } {
+        const printArea = this.calculatePrintAreaDimensions(side, baseCanvasSize);
+        
+        // Вычисляем абсолютные координаты из относительных
+        const absoluteLeft = printArea.left + (printArea.width * layout.position.x);
+        const absoluteTop = printArea.top + (printArea.height * layout.position.y);
+        
+        // Вычисляем абсолютные размеры
+        // Для изображений нужно учесть натуральные размеры через размер печатной области
+        const absoluteWidth = printArea.width * layout.size;
+        const absoluteHeight = printArea.width * layout.size * layout.aspectRatio;
+        
+        const baseData = {
+            id: layout.id,
+            type: layout.type,
+            view: layout.view,
+            absoluteLeft,
+            absoluteTop,
+            absoluteWidth,
+            absoluteHeight,
+            relativeX: layout.position.x,
+            relativeY: layout.position.y,
+            size: layout.size,
+            aspectRatio: layout.aspectRatio,
+            angle: layout.angle,
+            printArea,
+            name: layout.name,
+        };
+        
+        if (layout.isImageLayout()) {
+            return {
+                ...baseData,
+                url: layout.url,
+            };
+        } else if (layout.isTextLayout()) {
+            return {
+                ...baseData,
+                text: layout.text,
+                font: layout.font,
+            };
+        }
+        
+        return baseData as any;
+    }
+
+    /**
+     * УНИВЕРСАЛЬНАЯ ФУНКЦИЯ: Вычисляет печатную область для текущего размера экрана (UI)
+     * Использует размеры editorBlock вместо базового размера
+     * @param side - Сторона (front/back)
+     * @returns Размеры и позицию печатной области в пикселях экрана
+     */
+    private calculatePrintAreaForScreen(side: SideEnum): {
+        width: number;
+        height: number;
+        left: number;
+        top: number;
+    } {
+        const printConfig = this.getPrintConfigForSide(side);
+        if (!printConfig) {
+            console.warn(`[canvas] Не найдена конфигурация печати для ${side}`);
+            return { 
+                width: this.editorBlock.clientWidth, 
+                height: this.editorBlock.clientHeight, 
+                left: 0, 
+                top: 0 
+            };
+        }
+
+        // Рассчитываем размеры относительно текущего размера экрана
+        const width = printConfig.size.width / 600 * this.editorBlock.clientWidth;
+        const height = printConfig.size.height / 600 * this.editorBlock.clientHeight;
+        const left = Math.round((this.editorBlock.clientWidth - width) / 2 + (printConfig.position.x / 100 * this.editorBlock.clientWidth));
+        const top = Math.round((this.editorBlock.clientHeight - height) / 2 + (printConfig.position.y / 100 * this.editorBlock.clientHeight));
+
+        return { width, height, left, top };
+    }
+
+    /**
+     * УНИВЕРСАЛЬНАЯ ФУНКЦИЯ: Конвертирует абсолютные координаты canvas в относительные координаты layout
+     * Используется при перемещении объектов на canvas
+     * @param absoluteLeft - Абсолютная координата X на canvas
+     * @param absoluteTop - Абсолютная координата Y на canvas
+     * @param side - Сторона (front/back)
+     * @returns Относительные координаты для layout
+     */
+    private convertAbsoluteToRelativePosition(
+        absoluteLeft: number,
+        absoluteTop: number,
+        side: SideEnum
+    ): { x: number; y: number } {
+        const printArea = this.calculatePrintAreaForScreen(side);
+        
+        // Конвертируем абсолютные координаты в относительные (0-1)
+        const relativeX = (absoluteLeft - printArea.left) / printArea.width;
+        const relativeY = (absoluteTop - printArea.top) / printArea.height;
+        
+        return { x: relativeX, y: relativeY };
+    }
+
+    /**
      * Добавляет слой на экспортный canvas с правильными координатами
-     * Использует относительные координаты из layout для расчета абсолютных позиций
+     * ИСПОЛЬЗУЕТ УНИВЕРСАЛЬНУЮ ФУНКЦИЮ calculateLayoutAbsoluteData для расчета координат
      * @param layout - Слой для добавления
      * @param canvas - Canvas для добавления (обычно временный для экспорта)
      * @param printArea - Размеры и позиция печатной области
@@ -3389,24 +3653,29 @@ export default class Editor {
         canvas: fabric.StaticCanvas,
         printArea: { width: number; height: number; left: number; top: number }
     ): Promise<void> {
-        // Вычисляем абсолютные координаты из относительных
-        const absoluteLeft = printArea.left + (printArea.width * layout.position.x);
-        const absoluteTop = printArea.top + (printArea.height * layout.position.y);
+        // ИСПРАВЛЕНИЕ: Используем универсальную функцию для вычисления координат
+        const layoutData = this.calculateLayoutAbsoluteData(layout, layout.view, CONSTANTS.CANVAS_AREA_HEIGHT);
 
         if (layout.isImageLayout()) {
             const image = new fabric.Image(await this.loadImage(layout.url));
 
-            // Автоматически масштабируем, если изображение больше печатной области
-            let finalSize = layout.size;
-            if (finalSize === 1 && image.width! > printArea.width) {
-                finalSize = printArea.width / image.width!;
+            // ИСПРАВЛЕНИЕ: layout.size теперь - доля от ширины печатной области (0-1)
+            // Вычисляем желаемую ширину объекта в пикселях
+            let desiredWidth = printArea.width * layout.size;
+            
+            // Если размер не задан или слишком большой, используем размер печатной области
+            if (!layout.size || layout.size > 1) {
+                desiredWidth = Math.min(image.width!, printArea.width);
             }
+            
+            // Вычисляем scaleX относительно натуральной ширины изображения
+            const scaleX = desiredWidth / image.width!;
 
             image.set({
-                left: absoluteLeft,
-                top: absoluteTop,
-                scaleX: finalSize,
-                scaleY: finalSize * layout.aspectRatio,
+                left: layoutData.absoluteLeft,
+                top: layoutData.absoluteTop,
+                scaleX: scaleX,
+                scaleY: scaleX * layout.aspectRatio,
                 angle: layout.angle,
             } as any);
 
@@ -3417,11 +3686,16 @@ export default class Editor {
                 fontSize: layout.font.size,
             });
 
+            // ИСПРАВЛЕНИЕ: layout.size теперь - доля от ширины печатной области (0-1)
+            // Вычисляем желаемую ширину текста в пикселях
+            const desiredWidth = printArea.width * layout.size;
+            const scaleX = desiredWidth / text.width!;
+
             text.set({
-                left: absoluteLeft,
-                top: absoluteTop,
-                scaleX: layout.size,
-                scaleY: layout.size * layout.aspectRatio,
+                left: layoutData.absoluteLeft,
+                top: layoutData.absoluteTop,
+                scaleX: scaleX,
+                scaleY: scaleX * layout.aspectRatio,
                 angle: layout.angle,
             } as any);
 

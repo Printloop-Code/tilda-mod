@@ -188,9 +188,19 @@ export type RuleCart = {
     alwaysActive?: boolean; // Если true, правило применяется всегда (для сервисных сборов)
 }
 
+export type PickupInfoConfig = {
+    title: string;
+    workingHours: string;
+    location: string;
+    address: string;
+    directions: string;
+    phone: string;
+}
+
 export type CardFormProps = {
     cardBlockId: string;
     rules: RuleCart[];
+    pickupInfo?: PickupInfoConfig;
 }
 
 // Product creation типы

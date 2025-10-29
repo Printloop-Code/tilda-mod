@@ -131,7 +131,7 @@ export class EditorStorageManager {
         }
 
         try {
-            (window as any).tracker.setUserID(userId);
+            (window as any).OpenReplay.setUserID(userId);
         } catch (error) {
             console.error('Ошибка установки ID пользователя в tracker:', error);
         }
