@@ -75,13 +75,12 @@ export class CardForm {
 
     fields: NodeListOf<Element>;
     rules: RuleCart[];
-    pickupInfo: PickupInfoConfig | undefined;
 
     actionsStates = new Map();
     isUpdatingCart = false; // Флаг для предотвращения циклических обновлений
     isApplyingActions = false; // Флаг для предотвращения одновременного выполнения applyActions
 
-    constructor({ cardBlockId, rules, pickupInfo }: CardFormProps) {
+    constructor({ cardBlockId, rules }: CardFormProps) {
 
         this.cardBlock = document.querySelector(cardBlockId)! as HTMLElement;
 
@@ -98,15 +97,10 @@ export class CardForm {
         }
 
         this.rules = rules;
-        this.pickupInfo = pickupInfo;
         this.fields = document.querySelectorAll('.t-input-group') as NodeListOf<Element>;
 
         this.initRules();
         this.initCartObserver();
-        
-        if (this.pickupInfo) {
-            this.initPickupInfo();
-        }
     }
 
     initForm() {
@@ -1190,131 +1184,6 @@ export class CardForm {
         });
 
         console.debug(`[form] [hideQuantity] ✓ Скрыто счетчиков: ${hiddenCount}`);
-    }
-
-    /**
-     * Инициализирует отображение информации о самовывозе
-     */
-    initPickupInfo() {
-        if (!this.pickupInfo) {
-            console.warn('[form] [pickupInfo] Конфигурация самовывоза не задана');
-            return;
-        }
-
-        console.debug('[form] [pickupInfo] Инициализация информации о самовывозе');
-
-        // Находим wrapper с радио-кнопками доставки
-        const deliveryWrapper = document.querySelector('.t-radio__wrapper-delivery');
-        if (!deliveryWrapper) {
-            console.warn('[form] [pickupInfo] Wrapper доставки не найден');
-            return;
-        }
-
-        // Создаем delivery-hint (часы работы)
-        const deliveryHint = document.createElement('div');
-        deliveryHint.className = 'delivery-hint t-text t-text_xs';
-        deliveryHint.id = 'delivery-hint';
-        deliveryHint.style.cssText = 'color: #505050; margin-top: 20px; display: none;';
-        deliveryHint.textContent = this.pickupInfo.workingHours;
-        
-        // Создаем addresses-wrapper (полная информация)
-        const addressesWrapper = document.createElement('div');
-        addressesWrapper.id = 'addresses-wrapper';
-        addressesWrapper.style.display = 'none';
-        
-        // Создаем searchbox-info с полной информацией о пункте выдачи
-        const searchboxInfo = document.createElement('div');
-        searchboxInfo.className = 'searchbox-info';
-        searchboxInfo.style.cssText = `
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        `
-        searchboxInfo.setAttribute('tabindex', '-1');
-        searchboxInfo.innerHTML = `
-            <p style="font-weight: 400; margin-bottom: 15px;" class="t-text">Пункт получения:</p>
-            <p class="t-text">${this.pickupInfo.location}</p>
-            <p class="t-text">Адрес: ${this.pickupInfo.address}</p>
-            <p class="t-text" style="opacity: 0.6; line-height: 22px; font-size: .9rem;">
-                ${this.pickupInfo.directions}
-            </p>
-            <p class="t-text">Время работы: ${this.pickupInfo.workingHours}</p>
-            <p class="t-text">Телефон: ${this.pickupInfo.phone}</p>
-        `;
-        
-        addressesWrapper.appendChild(searchboxInfo);
-
-        // Вставляем блоки внутрь wrapper, после всех радио-кнопок
-        deliveryWrapper.appendChild(deliveryHint);
-        deliveryWrapper.appendChild(addressesWrapper);
-
-        // Функция для обновления видимости блока
-        const updatePickupInfoVisibility = () => {
-            const deliveryInputs = document.querySelectorAll<HTMLInputElement>('input[name="Доставка"]');
-            let selectedInput: HTMLInputElement | null = null;
-            
-            deliveryInputs.forEach((input) => {
-                if (input.checked) {
-                    selectedInput = input;
-                }
-            });
-
-            if (!selectedInput) {
-                console.debug('[form] [pickupInfo] Доставка не выбрана');
-                deliveryHint.style.display = 'none';
-                addressesWrapper.style.display = 'none';
-                return;
-            }
-
-            const selectedValue = (selectedInput as HTMLInputElement).value;
-            console.debug('[form] [pickupInfo] Выбранная доставка:', selectedValue);
-
-            // Используем нативный API Tilda для обработки доставки
-            if (typeof (window as any).tcart__processDelivery === 'function') {
-                (window as any).tcart__processDelivery(selectedInput);
-                console.debug('[form] [pickupInfo] ✓ Использован tcart__processDelivery');
-            }
-
-            // Обновляем UI корзины через нативный API Tilda
-            if (typeof (window as any).tcart__updateDelivery === 'function') {
-                (window as any).tcart__updateDelivery();
-                console.debug('[form] [pickupInfo] ✓ Использован tcart__updateDelivery');
-            }
-
-            // Показываем/скрываем блоки информации о самовывозе
-            if (selectedValue === 'Самовывоз' || selectedValue.includes('Самовывоз')) {
-                deliveryHint.style.display = 'block';
-                addressesWrapper.style.display = 'block';
-                console.debug('[form] [pickupInfo] Информация о самовывозе показана');
-            } else {
-                deliveryHint.style.display = 'none';
-                addressesWrapper.style.display = 'none';
-                console.debug('[form] [pickupInfo] Информация о самовывозе скрыта');
-            }
-
-            // Сохраняем в localStorage через нативный API
-            if (typeof (window as any).tcart__saveLocalObj === 'function') {
-                (window as any).tcart__saveLocalObj();
-                console.debug('[form] [pickupInfo] ✓ Корзина сохранена в localStorage');
-            }
-        };
-
-        // Добавляем обработчик на изменение поля доставки
-        const deliveryInputsForEvents = document.querySelectorAll<HTMLInputElement>('input[name="Доставка"]');
-        deliveryInputsForEvents.forEach((input) => {
-            input.addEventListener('change', updatePickupInfoVisibility);
-            
-            // Также перехватываем клики для совместимости с Tilda
-            input.addEventListener('click', () => {
-                // Даем время Tilda обработать клик, затем обновляем наш блок
-                setTimeout(updatePickupInfoVisibility, 100);
-            });
-        });
-
-        // Проверяем начальное состояние
-        updatePickupInfoVisibility();
-
-        console.debug('[form] [pickupInfo] ✓ Инициализация завершена');
     }
 }
 

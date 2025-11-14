@@ -151,7 +151,7 @@ export type EditorProps = {
         editorHistoryRedoBlockClass: string;
         editorLoadWithAiButtonClass: string;
         editorLoadWithoutAiButtonClass: string;
-        editorRemoveBackgroundButtonClass?: string;
+        editorRemoveBackgroundButtonClass: string;
     }
     formConfig?: {
         formBlockClass: string;
@@ -179,28 +179,27 @@ export type PopupProps = {
 // CardForm типы
 export type RuleCart = {
     variable: string;
+    alwaysActive?: boolean; // Правило всегда активно (например, сервисный сбор)
     actions: {
         value: string;
         sum?: number;
         quantityType?: 'fixed' | 'perProduct'; // fixed = 1 шт, perProduct = по количеству товаров
         quantity?: number; // конкретное количество (если не указано, используется quantityType)
     }[];
-    alwaysActive?: boolean; // Если true, правило применяется всегда (для сервисных сборов)
 }
 
 export type PickupInfoConfig = {
-    title: string;
-    workingHours: string;
-    location: string;
-    address: string;
-    directions: string;
-    phone: string;
+    location: string;      // Название пункта получения
+    address: string;       // Адрес
+    directions: string;    // Как добраться
+    workingHours: string;  // Время работы
+    phone: string;         // Телефон
 }
 
 export type CardFormProps = {
     cardBlockId: string;
     rules: RuleCart[];
-    pickupInfo?: PickupInfoConfig;
+    pickupInfo?: PickupInfoConfig; // Опциональная информация о самовывозе
 }
 
 // Product creation типы

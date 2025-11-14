@@ -2,7 +2,7 @@ import { LayoutProps, LayoutType, Position, Font, SideEnum, ImageLayoutProps, Te
 
 // Константы по умолчанию
 const DEFAULT_VALUES = {
-    POSITION: { x: 0, y: 0 } as Position,
+    POSITION: { x: 0.5, y: 0.5 } as Position, // Центр области печати
     SIZE: 1,
     ASPECT_RATIO: 1,
     ANGLE: 0,
@@ -27,6 +27,10 @@ export class Layout {
     text?: string;
     font?: Font;
 
+    // Относительная ширина объекта (в процентах от области печати)
+    // Используется для адаптации при изменении размера canvas
+    _relativeWidth: number | undefined;
+
     constructor(props: LayoutProps) {
         // Базовые свойства
         this.id = props.id || Layout.generateId();
@@ -37,6 +41,9 @@ export class Layout {
         this.view = props.view;
         this.angle = this.normalizeAngle(props.angle ?? DEFAULT_VALUES.ANGLE);
         this.name = props.name ?? null;
+
+        // Восстанавливаем _relativeWidth если он был сохранён
+        this._relativeWidth = (props as any)._relativeWidth;
 
         // Специфичные свойства в зависимости от типа
         if (props.type === 'image') {
@@ -138,7 +145,9 @@ export class Layout {
                 angle: this.angle,
                 name: this.name,
             };
-            return new Layout(props);
+            const cloned = new Layout(props);
+            cloned._relativeWidth = this._relativeWidth; // Копируем относительную ширину
+            return cloned;
         } else {
             const props: TextLayoutProps = {
                 type: 'text',
@@ -156,7 +165,9 @@ export class Layout {
             if (this.font !== undefined) {
                 props.font = { ...this.font };
             }
-            return new Layout(props);
+            const cloned = new Layout(props);
+            cloned._relativeWidth = this._relativeWidth; // Копируем относительную ширину
+            return cloned;
         }
     }
 
@@ -171,6 +182,7 @@ export class Layout {
             view: this.view,
             angle: this.angle,
             name: this.name,
+            _relativeWidth: this._relativeWidth, // Сохраняем для адаптации при resize
         };
 
         if (this.type === 'image') {
