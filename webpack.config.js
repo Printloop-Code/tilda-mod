@@ -22,8 +22,18 @@ module.exports = {
     context: path.resolve(__dirname),
     devtool: 'inline-source-map',
     entry: {
-        "bundle": "./src/index.ts",
-        "bundle.min": "./src/index.ts",
+        // Основной бандл с core функциональностью
+        "core": "./src/entries/core.ts",
+        "core.min": "./src/entries/core.ts",
+        // Отдельный бандл для Editor
+        "editor": "./src/entries/editor.ts",
+        "editor.min": "./src/entries/editor.ts",
+        // Отдельный бандл для Popup
+        "popup": "./src/entries/popup.ts",
+        "popup.min": "./src/entries/popup.ts",
+        // Отдельный бандл для CardForm
+        "cardForm": "./src/entries/cardForm.ts",
+        "cardForm.min": "./src/entries/cardForm.ts",
     },
     mode: 'development',
     module: {
@@ -35,7 +45,13 @@ module.exports = {
     },
     output: {
         filename: '[name].js',
-        path: path.resolve(__dirname, 'dist')
+        path: path.resolve(__dirname, 'dist'),
+        library: {
+            name: '[name]',
+            type: 'umd',
+            export: 'default',
+        },
+        globalObject: 'this',
     },
     resolve: {
         extensions: ['.ts', '.js']
@@ -44,6 +60,26 @@ module.exports = {
         minimize: true,
         minimizer: [new UglifyJsPlugin({
             include: /\.min\.js$/
-        })]
+        })],
+        // Разделение общего кода между бандлами
+        splitChunks: {
+            cacheGroups: {
+                // Общие зависимости (fabric, lucide и т.д.)
+                vendor: {
+                    test: /[\\/]node_modules[\\/]/,
+                    name: 'vendors',
+                    chunks: 'all',
+                    priority: 10,
+                },
+                // Общий код утилит
+                common: {
+                    test: /[\\/]src[\\/](utils|types|models)[\\/]/,
+                    name: 'common',
+                    chunks: 'all',
+                    minChunks: 2,
+                    priority: 5,
+                },
+            },
+        },
     }
 };
