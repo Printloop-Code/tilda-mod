@@ -5,5 +5,6 @@ import { initSafeRouteV2 } from '../utils/safeRouteIntegrationV2';
 initSafeRouteV2();
 
 // Экспортируем для возможности использования
-export default { init: initSafeRouteV2 };
+const Core = { init: initSafeRouteV2 };
+export default Core;
 

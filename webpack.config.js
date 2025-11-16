@@ -49,7 +49,6 @@ module.exports = {
         library: {
             name: '[name]',
             type: 'umd',
-            export: 'default',
         },
         globalObject: 'this',
     },
@@ -61,25 +60,7 @@ module.exports = {
         minimizer: [new UglifyJsPlugin({
             include: /\.min\.js$/
         })],
-        // Разделение общего кода между бандлами
-        splitChunks: {
-            cacheGroups: {
-                // Общие зависимости (fabric, lucide и т.д.)
-                vendor: {
-                    test: /[\\/]node_modules[\\/]/,
-                    name: 'vendors',
-                    chunks: 'all',
-                    priority: 10,
-                },
-                // Общий код утилит
-                common: {
-                    test: /[\\/]src[\\/](utils|types|models)[\\/]/,
-                    name: 'common',
-                    chunks: 'all',
-                    minChunks: 2,
-                    priority: 5,
-                },
-            },
-        },
+        // Отключаем разделение кода, т.к. это вызывает проблемы с UMD
+        splitChunks: false,
     }
 };
