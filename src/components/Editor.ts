@@ -1816,9 +1816,15 @@ export default class Editor {
 
                         console.debug(`[form] [input] layout updated`);
 
+                        // Сохраняем изменения в историю
+                        if (!this.isRestoringFromHistory) {
+                            this.saveLayersToHistory();
+                        }
+
                         this.showLayoutList();
                         this.updateLayouts();
                         this.saveState();
+                        this.saveLayouts().catch(err => console.error('[layers] Ошибка сохранения слоёв:', err));
                     }
                 } else {
                     // Режим создания нового layout
