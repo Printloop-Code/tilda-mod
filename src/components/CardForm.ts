@@ -1,5 +1,16 @@
 import { CardFormProps, RuleCart, PickupInfoConfig } from '../types';
 
+// OpenReplay tracker helper
+const logIssue = (key: string, payload?: any) => {
+    try {
+        if (typeof (window as any).OpenReplay?.issue === 'function') {
+            (window as any).OpenReplay.issue(key, payload);
+        }
+    } catch (e) {
+        console.warn('[OpenReplay] Failed to log issue:', e);
+    }
+};
+
 // Константы для селекторов DOM
 const DOM_SELECTORS = {
     // Селекторы корзины
@@ -86,12 +97,20 @@ export class CardForm {
 
         if (!this.cardBlock) {
             console.error(`Card block with id ${cardBlockId} not found`);
+            logIssue('card_form_init_error', {
+                error: 'card_block_not_found',
+                cardBlockId: cardBlockId
+            });
         }
 
         this.form = this.cardBlock.querySelector('form')! as HTMLFormElement;
 
         if (!this.form) {
             console.error(`Form block with id ${cardBlockId} not found`);
+            logIssue('card_form_init_error', {
+                error: 'form_not_found',
+                cardBlockId: cardBlockId
+            });
         } else {
             this.initForm();
         }
@@ -265,6 +284,11 @@ export class CardForm {
         const tildaCart = (window as any).tcart;
         if (!tildaCart || !Array.isArray(tildaCart.products)) {
             console.warn('[form] [cleanupCartOnInit] Корзина недоступна');
+            logIssue('cart_unavailable', {
+                context: 'cleanupCartOnInit',
+                hasTcart: !!tildaCart,
+                hasProducts: !!tildaCart?.products
+            });
             return;
         }
 
@@ -358,6 +382,10 @@ export class CardForm {
             return true;
         } catch (e) {
             console.warn('[form] [saveTildaCart] Ошибка сохранения:', e);
+            logIssue('cart_save_error', {
+                error: e instanceof Error ? e.message : String(e),
+                productsCount: tildaCart?.products?.length
+            });
             this.isUpdatingCart = false;
             return false;
         }
@@ -571,6 +599,12 @@ export class CardForm {
                             value: (el as HTMLInputElement).value
                         }))
                     });
+                    logIssue('form_element_not_found', {
+                        context: 'handleRuleProductDeletion',
+                        fieldKey: key,
+                        actionValue: state.action.value,
+                        availableInputsCount: allInputs.length
+                    });
                 }
 
                 break;
@@ -588,6 +622,9 @@ export class CardForm {
         const tildaCart = (window as any).tcart;
         if (!tildaCart || !Array.isArray(tildaCart.products)) {
             console.warn('[form] [updateRuleProductsQuantity] Корзина недоступна');
+            logIssue('cart_unavailable', {
+                context: 'updateRuleProductsQuantity'
+            });
             return;
         }
 
@@ -647,6 +684,13 @@ export class CardForm {
                                     newQuantity
                                 });
 
+                                logIssue('rule_product_quantity_updated', {
+                                    productName: state.action.value,
+                                    oldQuantity: oldQuantity,
+                                    newQuantity: newQuantity,
+                                    quantityType: state.action.quantityType
+                                });
+
                                 // Скрываем кнопки +/- для товаров из правил
                                 await CartUtils.wait(DELAYS.DOM_UPDATE);
                                 const plusMinusButtons = productElement.querySelector(DOM_SELECTORS.PRODUCT_PLUSMINUS) as HTMLElement;
@@ -655,13 +699,29 @@ export class CardForm {
                                 }
                             } else {
                                 console.warn('[form] [updateRuleProductsQuantity] Не найден quantityElement или функция updateQuantity');
+                                logIssue('cart_update_element_not_found', {
+                                    context: 'updateRuleProductsQuantity',
+                                    productName: state.action.value,
+                                    hasQuantityElement: !!quantityElement,
+                                    hasUpdateFunction: typeof (window as any).tcart__product__updateQuantity === 'function'
+                                });
                             }
                         } else {
                             console.warn('[form] [updateRuleProductsQuantity] Не найден DOM элемент товара после ожидания');
+                            logIssue('product_element_not_found', {
+                                context: 'updateRuleProductsQuantity',
+                                productName: state.action.value,
+                                attempts: 10
+                            });
                         }
                     }
                 } else {
                     console.warn(`[form] [updateRuleProductsQuantity] Товар "${state.action.value}" НЕ найден в корзине`);
+                    logIssue('product_not_found_in_cart', {
+                        context: 'updateRuleProductsQuantity',
+                        productName: state.action.value,
+                        cartProductsCount: tildaCart.products.length
+                    });
                 }
             }
         }
@@ -709,6 +769,11 @@ export class CardForm {
             console.debug('[form] [updateCartItemQuantityInDOM] Все товары в DOM:',
                 [...document.querySelectorAll('.t706__product-title, .t-store__product-name')].map((el: any) => el.innerText)
             );
+            logIssue('product_element_not_found_in_dom', {
+                context: 'updateCartItemQuantityInDOM',
+                productName: productName,
+                productsInDOM: [...document.querySelectorAll('.t706__product-title, .t-store__product-name')].length
+            });
             return;
         }
 
@@ -784,6 +849,9 @@ export class CardForm {
         const tildaCart = (window as any).tcart;
         if (!tildaCart || !Array.isArray(tildaCart.products)) {
             console.warn('[form] [updateAllCartItemsInDOM] Корзина недоступна');
+            logIssue('cart_unavailable', {
+                context: 'updateAllCartItemsInDOM'
+            });
             return;
         }
 
@@ -829,6 +897,11 @@ export class CardForm {
                     console.debug(`[form] [refreshCartUI] ✓ Вызван ${funcName}`);
                 } catch (e) {
                     console.warn(`[form] [refreshCartUI] Ошибка ${funcName}:`, e);
+                    logIssue('cart_refresh_function_error', {
+                        context: 'refreshCartUI',
+                        functionName: funcName,
+                        error: e instanceof Error ? e.message : String(e)
+                    });
                 }
             }
         });
@@ -1002,6 +1075,11 @@ export class CardForm {
         }
 
         console.warn('[form] [removeProduct] ✗ Не удалось удалить товар:', productName);
+        logIssue('product_removal_failed', {
+            context: 'removeProductFromCart',
+            productName: productName,
+            cartProductsCount: tildaCart?.products?.length
+        });
         return false;
     }
 
@@ -1034,6 +1112,10 @@ export class CardForm {
 
             if (!cartLoaded) {
                 console.warn('[form] [applyActions] Корзина не загрузилась за 3 секунды, продолжаем');
+                logIssue('cart_load_timeout', {
+                    context: 'applyActions',
+                    timeout: 3000
+                });
             }
 
             for (const [key, state] of this.actionsStates) {
@@ -1053,7 +1135,14 @@ export class CardForm {
                     // Если было старое действие, удаляем старый продукт
                     if (oldAction && oldAction.value) {
                         console.debug('[form] [applyActions] Удаляем старый товар:', oldAction.value);
-                        await this.removeProductFromCart(oldAction.value);
+                        const removed = await this.removeProductFromCart(oldAction.value);
+                        if (removed) {
+                            logIssue('rule_product_removed', {
+                                productName: oldAction.value,
+                                fieldKey: key,
+                                price: oldAction.sum || 0
+                            });
+                        }
                     }
 
                     // Если есть новое действие, добавляем новый продукт
@@ -1074,6 +1163,14 @@ export class CardForm {
                             name: state.action.value,
                             price: state.action.sum || 0,
                             quantity: productQuantity,
+                        });
+
+                        logIssue('rule_product_added', {
+                            productName: state.action.value,
+                            fieldKey: key,
+                            price: state.action.sum || 0,
+                            quantity: productQuantity,
+                            quantityType: state.action.quantityType || 'fixed'
                         });
 
                         // Ждем добавления продукта и скрываем кнопки изменения количества

@@ -21,6 +21,21 @@ import { renderLayout, renderLayoutToCanvas, calculateLayoutDimensions } from '.
 declare const fabric: any;
 
 // ============================================
+// OPENREPLAY ЛОГИРОВАНИЕ
+// ============================================
+
+// OpenReplay tracker helper
+const logIssue = (key: string, payload?: any) => {
+    try {
+        if (typeof (window as any).OpenReplay?.issue === 'function') {
+            (window as any).OpenReplay.issue(key, payload);
+        }
+    } catch (e) {
+        console.warn('[OpenReplay] Failed to log issue:', e);
+    }
+};
+
+// ============================================
 // КОНСТАНТЫ
 // ============================================
 
@@ -221,6 +236,11 @@ export default class Editor {
     constructor({ blocks, productConfigs, formConfig, apiConfig, options }: EditorProps) {
         // Валидация конфигурации
         if (!productConfigs || productConfigs.length === 0) {
+            logIssue('editor_init_error', {
+                error: 'product_configs_missing',
+                hasProductConfigs: !!productConfigs,
+                productsCount: productConfigs?.length || 0
+            });
             throw new Error('[Editor] Не предоставлены конфигурации продуктов');
         }
 
@@ -311,11 +331,20 @@ export default class Editor {
         // Установка дефолтных значений
         const defaultProduct = productConfigs[0];
         if (!defaultProduct) {
+            logIssue('editor_init_error', {
+                error: 'default_product_not_found',
+                productsCount: productConfigs.length
+            });
             throw new Error('[Editor] Не найден дефолтный продукт');
         }
 
         const defaultMockup = defaultProduct.mockups[0];
         if (!defaultMockup) {
+            logIssue('editor_init_error', {
+                error: 'default_mockup_not_found',
+                productType: defaultProduct.type,
+                mockupsCount: defaultProduct.mockups?.length || 0
+            });
             throw new Error('[Editor] Не найден дефолтный mockup');
         }
 
@@ -435,6 +464,9 @@ export default class Editor {
     private getRequiredElement<T extends HTMLElement = HTMLElement>(selector: string): T {
         const element = document.querySelector<T>(selector);
         if (!element) {
+            logIssue('editor_required_element_not_found', {
+                selector: selector
+            });
             throw new Error(`[Editor] Не найден обязательный элемент: ${selector}`);
         }
         return element;
@@ -465,6 +497,10 @@ export default class Editor {
             console.debug('[editor] Инициализация завершена');
         } catch (error) {
             console.error('[editor] Ошибка инициализации:', error);
+            logIssue('editor_initialization_error', {
+                error: error instanceof Error ? error.message : String(error),
+                hasStorage: !!this.storageManager
+            });
             this.initializeWithDefaults();
         }
     }
@@ -475,6 +511,12 @@ export default class Editor {
             await this.updateMockup();
         } catch (err) {
             console.error('[editor] Ошибка загрузки mockup по умолчанию:', err);
+            logIssue('editor_default_mockup_load_error', {
+                error: err instanceof Error ? err.message : String(err),
+                selectedType: this._selectType,
+                selectedColor: this._selectColor,
+                selectedSide: this._selectSide
+            });
         }
     }
 
@@ -687,6 +729,11 @@ export default class Editor {
             // Поиск URL mockup
             const mockupImageUrl = this.findMockupUrl();
             if (!mockupImageUrl) {
+                logIssue('mockup_not_found', {
+                    productType: this._selectType,
+                    color: this._selectColor.name,
+                    side: this._selectSide
+                });
                 throw new Error('[mockup] Не найден mockup для текущих параметров');
             }
 
@@ -700,6 +747,12 @@ export default class Editor {
             console.debug('[mockup] Mockup успешно обновлен');
         } catch (error) {
             console.error('[mockup] Ошибка обновления mockup:', error);
+            logIssue('mockup_update_error', {
+                error: error instanceof Error ? error.message : String(error),
+                productType: this._selectType,
+                color: this._selectColor.name,
+                side: this._selectSide
+            });
             throw error;
         } finally {
             this.emit(EditorEventType.MOCKUP_LOADING, false);
@@ -805,6 +858,15 @@ export default class Editor {
             console.debug('[state] Состояние успешно сохранено');
         } catch (error) {
             console.error('[state] Ошибка сохранения состояния:', error);
+            logIssue('editor_state_save_error', {
+                error: error instanceof Error ? error.message : String(error),
+                state: {
+                    type: this._selectType,
+                    color: this._selectColor.name,
+                    side: this._selectSide,
+                    size: this._selectSize
+                }
+            });
         }
     }
 
@@ -815,6 +877,10 @@ export default class Editor {
             console.debug('[layers] Слои успешно сохранены');
         } catch (error) {
             console.error('[layers] Ошибка сохранения слоёв:', error);
+            logIssue('editor_layers_save_error', {
+                error: error instanceof Error ? error.message : String(error),
+                layersCount: this.layouts.length
+            });
         }
     }
 
@@ -836,6 +902,9 @@ export default class Editor {
             this.saveLayersToHistory();
         } catch (error) {
             console.error('[layers] Ошибка загрузки слоёв:', error);
+            logIssue('editor_layers_load_error', {
+                error: error instanceof Error ? error.message : String(error)
+            });
             this.layouts = [];
             // Сохраняем пустое состояние в историю
             this.saveLayersToHistory();
@@ -1511,6 +1580,13 @@ export default class Editor {
 
             } catch (error) {
                 console.error('[order] Ошибка создания заказа:', error);
+                logIssue('order_creation_error', {
+                    error: error instanceof Error ? error.message : String(error),
+                    productType: this._selectType,
+                    size: this._selectSize,
+                    color: this._selectColor.name,
+                    layersCount: this.layouts.length
+                });
                 alert('Ошибка при создании заказа');
 
                 // НОВОЕ: Восстанавливаем кнопку при ошибке
@@ -1874,6 +1950,13 @@ export default class Editor {
                 }
                 this.emit(EditorEventType.MOCKUP_LOADING, false);
                 console.error('[form] [input] error', error);
+                logIssue('image_generation_error', {
+                    error: error instanceof Error ? error.message : String(error),
+                    prompt: prompt,
+                    shirtColor: this._selectColor.name,
+                    withAi: this.editorLoadWithAi,
+                    isEditing: !!this._selectLayout
+                });
                 alert("Ошибка при генерации изображения");
 
                 // НОВОЕ: Восстанавливаем кнопку при ошибке
@@ -3082,6 +3165,12 @@ export default class Editor {
                 }
             } catch (error) {
                 console.error(`[export] Ошибка при экспорте стороны ${side}:`, error);
+                logIssue('export_side_error', {
+                    error: error instanceof Error ? error.message : String(error),
+                    side: side,
+                    withMockup: withMockup,
+                    resolution: resolution
+                });
             }
             return null;
         });

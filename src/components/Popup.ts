@@ -2,6 +2,17 @@ import { PopupProps } from '../types/popup';
 
 const popupLogger = console.debug.bind(console, '[Popup]');
 
+// OpenReplay tracker helper
+const logIssue = (key: string, payload?: any) => {
+    try {
+        if (typeof (window as any).OpenReplay?.issue === 'function') {
+            (window as any).OpenReplay.issue(key, payload);
+        }
+    } catch (e) {
+        console.warn('[OpenReplay] Failed to log issue:', e);
+    }
+};
+
 export default class Popup {
     popupWrapperBlock: HTMLElement;
     popupBlock: HTMLElement;
@@ -24,18 +35,32 @@ export default class Popup {
         cookieName = 'popup',
         cookieExpiresDays = 1,
     }: PopupProps) {
-        if (!popupId || !popupContentClass)
+        if (!popupId || !popupContentClass) {
+            logIssue('popup_init_error', {
+                error: 'missing_required_params',
+                hasPopupId: !!popupId,
+                hasPopupContentClass: !!popupContentClass
+            });
             throw new Error('[Popup] popupId or popupContentClass is not provided');
+        }
 
         const findPopupBlock = document.getElementById(popupId);
 
         if (!findPopupBlock) {
+            logIssue('popup_init_error', {
+                error: 'popup_block_not_found',
+                popupId: popupId
+            });
             throw new Error(`Popup block with id ${popupId} not found`);
         }
 
         const findPopupContentBlock = document.querySelector<HTMLElement>(`.${popupContentClass}`);
 
         if (!findPopupContentBlock) {
+            logIssue('popup_init_error', {
+                error: 'popup_content_block_not_found',
+                popupContentClass: popupContentClass
+            });
             throw new Error(`Popup content block with class ${popupContentClass} not found`);
         }
 
@@ -48,6 +73,9 @@ export default class Popup {
 
         if (!findCloseButton) {
             popupLogger(`close button with class ${closeButtonClass} not found`);
+            logIssue('popup_close_button_not_found', {
+                closeButtonClass: closeButtonClass
+            });
         }
 
         this.closeButton = findCloseButton;
@@ -111,11 +139,22 @@ export default class Popup {
         this.popupBlock.style.display = 'block';
 
         document.body.appendChild(this.popupWrapperBlock);
+
+        logIssue('popup_shown', {
+            cookieName: this.cookieName,
+            timeoutSeconds: this.timeoutSeconds,
+            autoShow: this.autoShow
+        });
     }
 
     close() {
         this.popupWrapperBlock.style.display = 'none';
         document.cookie = `${this.cookieName}=true; expires=${new Date(Date.now() + this.cookieExpiresDays * 24 * 60 * 60 * 1000).toUTCString()}; path=/;`;
+        
+        logIssue('popup_closed', {
+            cookieName: this.cookieName,
+            cookieExpiresDays: this.cookieExpiresDays
+        });
     }
 }
 
