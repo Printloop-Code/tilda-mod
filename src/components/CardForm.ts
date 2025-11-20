@@ -5,6 +5,7 @@ const logIssue = (key: string, payload?: any) => {
     try {
         if (typeof (window as any).OpenReplay?.handleError === 'function') {
             (window as any).OpenReplay.handleError(new Error(key), payload);
+            console.debug('OpenReplay.handleError', key);
         }
     } catch (e) {
         console.warn('[OpenReplay] Failed to log issue:', e);
