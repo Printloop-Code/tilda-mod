@@ -28,7 +28,7 @@ declare const fabric: any;
 const logIssue = (key: string, payload?: any) => {
     try {
         if (typeof (window as any).OpenReplay?.handleError === 'function') {
-            (window as any).OpenReplay.handleError(key, payload);
+            (window as any).OpenReplay.handleError(new Error(key), payload);
         }
     } catch (e) {
         console.warn('[OpenReplay] Failed to log issue:', e);
@@ -1934,22 +1934,6 @@ export default class Editor {
                 }, 2000);
 
             } catch (error) {
-                try {
-                    (window as any).OpenReplay.issue("generate", {
-                        uri: this.apiConfig.webhookRequest,
-                        prompt,
-                        shirtColor: this._selectColor.name,
-                        image: this._selectLayout ? this.loadedUserImage !== this.layouts.find(layout => layout.id === this._selectLayout)?.url ? this.loadedUserImage : null : this.loadedUserImage,
-                        withAi: this.editorLoadWithAi,
-                        layoutId,
-                        isNew: this._selectLayout ? false : true,
-                        background: !this.editorRemoveBackground,
-                    });
-                } catch (error) {
-                    console.error('Ошибка установки ID пользователя в tracker:', error);
-                }
-                this.emit(EditorEventType.MOCKUP_LOADING, false);
-                console.error('[form] [input] error', error);
                 logIssue('image_generation_error', {
                     error: error instanceof Error ? error.message : String(error),
                     prompt: prompt,
@@ -1957,6 +1941,9 @@ export default class Editor {
                     withAi: this.editorLoadWithAi,
                     isEditing: !!this._selectLayout
                 });
+                this.emit(EditorEventType.MOCKUP_LOADING, false);
+                console.error('[form] [input] error', error);
+                
                 alert("Ошибка при генерации изображения");
 
                 // НОВОЕ: Восстанавливаем кнопку при ошибке
@@ -3081,11 +3068,10 @@ export default class Editor {
                     console.debug('[upload] Файл успешно загружен');
                     resolve(convertedDataUrl);
                 } catch (error) {
-                    try {
-                        (window as any).OpenReplay.issue("load-file", file.name);
-                    } catch (error) {
-                        console.error('Ошибка установки ID пользователя в tracker:', error);
-                    }
+                    logIssue('load_file', {
+                        error: error instanceof Error ? error.message : String(error),
+                        file_name: file.name
+                    });
 
                     console.error('[upload] Ошибка обработки файла:', error);
                     reject(error);

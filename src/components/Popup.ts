@@ -6,7 +6,7 @@ const popupLogger = console.debug.bind(console, '[Popup]');
 const logIssue = (key: string, payload?: any) => {
     try {
         if (typeof (window as any).OpenReplay?.handleError === 'function') {
-            (window as any).OpenReplay.handleError(key, payload);
+            (window as any).OpenReplay.handleError(new Error(key), payload);
         }
     } catch (e) {
         console.warn('[OpenReplay] Failed to log issue:', e);
