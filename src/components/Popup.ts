@@ -5,8 +5,8 @@ const popupLogger = console.debug.bind(console, '[Popup]');
 // OpenReplay tracker helper
 const logIssue = (key: string, payload?: any) => {
     try {
-        if (typeof (window as any).OpenReplay?.issue === 'function') {
-            (window as any).OpenReplay.issue(key, payload);
+        if (typeof (window as any).OpenReplay?.handleError === 'function') {
+            (window as any).OpenReplay.handleError(key, payload);
         }
     } catch (e) {
         console.warn('[OpenReplay] Failed to log issue:', e);
@@ -150,7 +150,7 @@ export default class Popup {
     close() {
         this.popupWrapperBlock.style.display = 'none';
         document.cookie = `${this.cookieName}=true; expires=${new Date(Date.now() + this.cookieExpiresDays * 24 * 60 * 60 * 1000).toUTCString()}; path=/;`;
-        
+
         logIssue('popup_closed', {
             cookieName: this.cookieName,
             cookieExpiresDays: this.cookieExpiresDays

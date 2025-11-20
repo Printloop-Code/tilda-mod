@@ -3,8 +3,8 @@ import { CardFormProps, RuleCart, PickupInfoConfig } from '../types';
 // OpenReplay tracker helper
 const logIssue = (key: string, payload?: any) => {
     try {
-        if (typeof (window as any).OpenReplay?.issue === 'function') {
-            (window as any).OpenReplay.issue(key, payload);
+        if (typeof (window as any).OpenReplay?.handleError === 'function') {
+            (window as any).OpenReplay.handleError(key, payload);
         }
     } catch (e) {
         console.warn('[OpenReplay] Failed to log issue:', e);

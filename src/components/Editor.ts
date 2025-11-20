@@ -27,8 +27,8 @@ declare const fabric: any;
 // OpenReplay tracker helper
 const logIssue = (key: string, payload?: any) => {
     try {
-        if (typeof (window as any).OpenReplay?.issue === 'function') {
-            (window as any).OpenReplay.issue(key, payload);
+        if (typeof (window as any).OpenReplay?.handleError === 'function') {
+            (window as any).OpenReplay.handleError(key, payload);
         }
     } catch (e) {
         console.warn('[OpenReplay] Failed to log issue:', e);
@@ -976,10 +976,10 @@ export default class Editor {
                 this.initSizesList();
                 this.showLayoutList();
                 this.updateLayouts();
-                
+
                 // Сохраняем layouts после обновления (для вычисления _relativeWidth у старых layouts)
                 await this.saveLayouts();
-                
+
                 this.updateSum();
             } else {
                 console.warn('[state] Не удалось применить сохраненное состояние');
@@ -2558,32 +2558,32 @@ export default class Editor {
         // Используем относительные координаты из layouts, которые автоматически адаптируются
         this.canvases.forEach((canvas) => {
             const side = (canvas as any).side;
-            
+
             // Удаляем ВСЕ объекты дизайна (кроме служебных)
             const objects = (canvas as any).getObjects();
             const toRemove: any[] = [];
-            
+
             objects.forEach((obj: any) => {
                 // Удаляем всё кроме служебных элементов
-                if (obj.name !== 'area:border' && 
+                if (obj.name !== 'area:border' &&
                     obj.name !== 'area:clip' &&
                     !obj.name?.startsWith('guideline')) {
                     toRemove.push(obj);
                 }
             });
-            
+
             // Удаляем все объекты дизайна
             toRemove.forEach((obj: any) => canvas.remove(obj));
-            
+
             console.debug(`[canvas] Удалено ${toRemove.length} объектов для перерисовки на стороне ${side}`);
-            
+
             // Перерисовываем слои для этой стороны с новыми размерами
             // renderLayout автоматически использует новые размеры контейнера
             const layoutsForSide = this.layouts.filter(l => l.view === side);
             layoutsForSide.forEach(layout => {
                 this.addLayoutToCanvas(layout);
             });
-            
+
             canvas.requestRenderAll();
         });
 
@@ -2836,7 +2836,7 @@ export default class Editor {
         // Обновляем layout с относительными координатами (от 0 до 1)
         layout.position.x = (object.left! - dimensions.printAreaLeft) / dimensions.printAreaWidth;
         layout.position.y = (object.top! - dimensions.printAreaTop) / dimensions.printAreaHeight;
-        
+
         // ВАЖНО: Сохраняем размер как scale от оригинального изображения
         // Этот scale будет использован при отрисовке, независимо от размера области печати
         layout.size = object.scaleX!;
@@ -3253,7 +3253,7 @@ export default class Editor {
         // Масштабируем относительно размера мокапа на canvas
         const printAreaWidth = (printConfig.size.width / 600) * mockupDimensions.width;
         const printAreaHeight = (printConfig.size.height / 600) * mockupDimensions.height;
-        
+
         // Вычисляем позицию области печати (центрированная + смещение из printConfig)
         const printAreaX = mockupDimensions.x + (mockupDimensions.width - printAreaWidth) / 2 + (printConfig.position.x / 100) * mockupDimensions.width;
         const printAreaY = mockupDimensions.y + (mockupDimensions.height - printAreaHeight) / 2 + (printConfig.position.y / 100) * mockupDimensions.height;
