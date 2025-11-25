@@ -28,13 +28,13 @@ export async function generateImage({
 
     const formData = new FormData();
     formData.set('userId', userId);
-    formData.set('prompt', prompt);
+    formData.set('prompt', prompt || "");
     formData.set('shirtColor', shirtColor);
     formData.set('placement', 'center');
     formData.set('printSize', "big");
     formData.set('transferType', '');
     formData.set('request_type', 'generate');
-    formData.set('background', background.toString());
+    formData.set('background', background?.toString() || "true");
 
     if (layoutId)
         formData.set('layoutId', layoutId);

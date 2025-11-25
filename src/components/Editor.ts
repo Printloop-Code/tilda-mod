@@ -160,7 +160,7 @@ export default class Editor {
     // СОСТОЯНИЕ РЕДАКТОРА (приватное, доступ через геттеры)
     // ============================================
     private _selectType: Product['type'];           // Текущий выбранный тип продукта (tshirt/hoodie)
-    private _selectColor: Color;                    // Текущий выбранный цвет
+    private _selectColor!: Color;                   // Текущий выбранный цвет (гарантированно инициализируется в конструкторе)
     private _selectSide: SideEnum;                  // Текущая выбранная сторона (front/back)
     private _selectSize: Size;                      // Текущий выбранный размер
     private _selectLayout: Layout['id'] | null = null;  // ID редактируемого слоя (null = режим создания)
@@ -347,6 +347,16 @@ export default class Editor {
                 mockupsCount: defaultProduct.mockups?.length || 0
             });
             throw new Error('[Editor] Не найден дефолтный mockup');
+        }
+
+        // Проверка и инициализация цвета
+        if (!defaultMockup.color || !defaultMockup.color.name) {
+            logIssue('editor_init_error', {
+                error: 'default_color_not_found',
+                productType: defaultProduct.type,
+                mockup: defaultMockup
+            });
+            throw new Error('[Editor] Цвет не определен в дефолтном mockup');
         }
 
         this._selectColor = defaultMockup.color;
@@ -1066,6 +1076,10 @@ export default class Editor {
     }
 
     setColor(color: Color): void {
+        if (!color || !color.name) {
+            console.error('[Editor] Попытка установить некорректный цвет', color);
+            return;
+        }
         if (this._selectColor !== color) {
             this._selectColor = color;
             this.clearMockupCache(); // Очищаем кэш при изменении цвета
@@ -1861,6 +1875,11 @@ export default class Editor {
             const layoutId = this._selectLayout || Layout.generateId();
 
             try {
+                // Проверка корректности цвета перед генерацией
+                if (!this._selectColor || !this._selectColor.name) {
+                    throw new Error('Цвет не определен. Пожалуйста, выберите цвет товара.');
+                }
+
                 const url = await generateImage({
                     uri: this.apiConfig.webhookRequest,
                     prompt,
@@ -1938,7 +1957,7 @@ export default class Editor {
                 logIssue('image_generation_error', {
                     error: error instanceof Error ? error.message : String(error),
                     prompt: prompt,
-                    shirtColor: this._selectColor.name,
+                    shirtColor: this._selectColor?.name || 'unknown',
                     withAi: this.editorLoadWithAi,
                     isEditing: !!this._selectLayout
                 });
@@ -2041,7 +2060,7 @@ export default class Editor {
             // Если текущий цвет не существует для нового продукта, берем первый доступный цвет
             if (!mockupWithCurrentColor) {
                 const firstMockup = product.mockups.find(m => m.side === this._selectSide);
-                if (firstMockup) {
+                if (firstMockup && firstMockup.color && firstMockup.color.name) {
                     this._selectColor = firstMockup.color;
                     console.debug(`[product] Цвет изменен на ${this._selectColor.name} для продукта ${productType}`);
                 }
@@ -2100,7 +2119,7 @@ export default class Editor {
         if (!product) return;
 
         const mockup = product.mockups.find(m => m.color.name === colorName);
-        if (!mockup) return;
+        if (!mockup || !mockup.color || !mockup.color.name) return;
 
         this._selectColor = mockup.color;
         this.clearMockupCache(); // Очищаем кэш при смене цвета
