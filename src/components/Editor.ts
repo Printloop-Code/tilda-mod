@@ -1312,7 +1312,7 @@ export default class Editor {
             sizeItem.classList.add('editor-settings__size-block__' + size);
 
             const borderBlock = sizeItem.firstElementChild as HTMLElement;
-            borderBlock.style.borderColor = '#f3f3f3';
+            borderBlock.style.setProperty('--t396-bordercolor', '#f3f3f3');
 
             const sizeText = getLastChild(sizeItem);
             if (sizeText) {
@@ -1329,7 +1329,7 @@ export default class Editor {
             this.sizeBlocks.forEach(block => {
                 const borderBlock = block.firstElementChild as HTMLElement;
                 if (borderBlock) {
-                    borderBlock.style.borderColor = '#f3f3f3';
+                    borderBlock.style.setProperty('--t396-bordercolor', '#f3f3f3');
                 }
             });
 
@@ -1339,7 +1339,7 @@ export default class Editor {
             if (activeBlock) {
                 const borderBlock = activeBlock.firstElementChild as HTMLElement;
                 if (borderBlock) {
-                    borderBlock.style.borderColor = '';
+                    borderBlock.style.setProperty('--t396-bordercolor', '');
                 }
             }
         }
@@ -2158,7 +2158,7 @@ export default class Editor {
         this.sizeBlocks.forEach(block => {
             const borderBlock = block.firstElementChild as HTMLElement;
             if (borderBlock) {
-                borderBlock.style.borderColor = '#f3f3f3';
+                borderBlock.style.setProperty('--t396-bordercolor', '#f3f3f3');
             }
         });
 
@@ -2168,7 +2168,7 @@ export default class Editor {
         if (activeBlock) {
             const borderBlock = activeBlock.firstElementChild as HTMLElement;
             if (borderBlock) {
-                borderBlock.style.borderColor = '';
+                borderBlock.style.setProperty('--t396-bordercolor', '');
             }
         }
     }
@@ -2368,11 +2368,11 @@ export default class Editor {
                 const fixButtonWithAi = buttonWithAi.firstElementChild as HTMLElement;
                 const fixButtonWithoutAi = buttonWithoutAi.firstElementChild as HTMLElement;
                 if (fixButtonWithAi) {
-                    fixButtonWithAi.style.borderColor = '';
+                    fixButtonWithAi.style.setProperty('--t396-bordercolor', '');
                     console.debug(`[ai buttons] С ИИ: сброшен borderColor (оранжевый)`);
                 }
                 if (fixButtonWithoutAi) {
-                    fixButtonWithoutAi.style.borderColor = '#f2f2f2';
+                    fixButtonWithoutAi.style.setProperty('--t396-bordercolor', '#f2f2f2');
                     console.debug(`[ai buttons] Без ИИ: установлен borderColor=#f2f2f2 (серый)`);
                 }
             } else {
@@ -2380,11 +2380,11 @@ export default class Editor {
                 const fixButtonWithAi = buttonWithAi.firstElementChild as HTMLElement;
                 const fixButtonWithoutAi = buttonWithoutAi.firstElementChild as HTMLElement;
                 if (fixButtonWithAi) {
-                    fixButtonWithAi.style.borderColor = '#f2f2f2';
+                    fixButtonWithAi.style.setProperty('--t396-bordercolor', '#f2f2f2');
                     console.debug(`[ai buttons] С ИИ: установлен borderColor=#f2f2f2 (серый)`);
                 }
                 if (fixButtonWithoutAi) {
-                    fixButtonWithoutAi.style.borderColor = '';
+                    fixButtonWithoutAi.style.setProperty('--t396-bordercolor', '');
                     console.debug(`[ai buttons] Без ИИ: сброшен borderColor (оранжевый)`);
                 }
             }
@@ -2405,11 +2405,11 @@ export default class Editor {
             if (fixButton) {
                 if (value) {
                     // Фон убирается - оранжевая рамка
-                    fixButton.style.borderColor = '';
+                    fixButton.style.setProperty('--t396-bordercolor', '');
                     console.debug(`[remove bg button] Убрать фон: сброшен borderColor (оранжевый)`);
                 } else {
                     // Фон не убирается - серая рамка
-                    fixButton.style.borderColor = '#f2f2f2';
+                    fixButton.style.setProperty('--t396-bordercolor', '#f2f2f2');
                     console.debug(`[remove bg button] Убрать фон: установлен borderColor=#f2f2f2 (серый)`);
                 }
             }
